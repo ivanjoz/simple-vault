@@ -101,10 +101,18 @@ class VaultState {
 			// Resume if the DEK is still available: either a SharedWorker kept it,
 			// or (opt-in) it was persisted in sessionStorage for this tab.
 			if (await this.#resumeSession()) {
-				await this.loadCards();
-				this.status = 'unlocked';
-				void this.#trySilentConnect(); // reconnect token only — no sync on reload
-				return;
+				// The worker's key can outlive the on-disk envelope (e.g. the user
+				// cleared browser storage while a tab — and thus the SharedWorker —
+				// stayed alive). Only resume if the envelope is actually still there;
+				// otherwise the key is stale, so drop it and start clean.
+				const envelope = await this.repo.getMeta<VaultEnvelope>(META_ENVELOPE);
+				if (envelope) {
+					await this.loadCards();
+					this.status = 'unlocked';
+					void this.#trySilentConnect(); // reconnect token only — no sync on reload
+					return;
+				}
+				await this.lock(); // clear the stale worker key; falls through to connect
 			}
 
 			const envelope = await this.repo.getMeta<VaultEnvelope>(META_ENVELOPE);
