@@ -1,7 +1,16 @@
 @import 'tailwindcss';
 
+/* Iconify icons compiled to SVG at build time (offline, no runtime JS).
+   Use e.g. <span class="icon-[lucide--settings]"></span>. Icon data comes
+   from the installed @iconify-json/lucide package. */
+@plugin "@iconify/tailwind4";
+
 /* Dark-first theme tokens for the vault UI. */
 @theme {
+	/* 1 spacing unit = 1px, so utility numbers map directly to pixels
+	   (e.g. p-16 = 16px). All spacing utilities were scaled ×4 to match. */
+	--spacing: 1px;
+
 	--color-bg: #0f1115;
 	--color-surface: #171a21;
 	--color-surface-2: #1e222b;

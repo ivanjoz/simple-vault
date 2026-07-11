@@ -25,10 +25,10 @@
 	<Sidebar />
 
 	<main class="flex flex-1 flex-col overflow-hidden">
-		<div class="flex items-center gap-3 border-b border-border p-4">
+		<div class="flex items-center gap-12 border-b border-border p-16">
 			<div class="relative flex-1">
 				<svg
-					class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-muted"
+					class="pointer-events-none absolute top-1/2 left-12 -translate-y-1/2 text-muted"
 					width="16"
 					height="16"
 					viewBox="0 0 24 24"
@@ -42,22 +42,22 @@
 				<input
 					bind:value={vault.search}
 					placeholder="Search items…"
-					class="w-full rounded-lg border border-border bg-surface-2 py-2 pr-3 pl-9 text-sm text-text outline-none focus:border-accent"
+					class="w-full rounded-lg border border-border bg-surface-2 py-8 pr-12 pl-36 text-sm text-text outline-none focus:border-accent"
 				/>
 			</div>
 			<Button onclick={openNew}>New item</Button>
 		</div>
 
-		<div class="flex-1 overflow-y-auto p-4">
+		<div class="flex-1 overflow-y-auto p-16">
 			{#if vault.visibleCards.length === 0}
-				<div class="flex h-full flex-col items-center justify-center gap-3 text-center text-muted">
+				<div class="flex h-full flex-col items-center justify-center gap-12 text-center text-muted">
 					<p>{vault.cards.length === 0 ? 'Your vault is empty.' : 'No items match your search.'}</p>
 					{#if vault.cards.length === 0}
 						<Button onclick={openNew}>Add your first item</Button>
 					{/if}
 				</div>
 			{:else}
-				<div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+				<div class="grid grid-cols-1 gap-12 sm:grid-cols-2 lg:grid-cols-3">
 					{#each vault.visibleCards as card (card.id)}
 						<Card {card} onopen={openCard} />
 					{/each}

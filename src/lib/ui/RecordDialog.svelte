@@ -71,9 +71,9 @@
 	onDestroy(clearReveal);
 </script>
 
-<div class="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-6" onclick={onclose} onkeydown={() => {}} role="presentation">
+<div class="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-24" onclick={onclose} onkeydown={() => {}} role="presentation">
 	<div
-		class="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-border bg-surface p-6 shadow-2xl"
+		class="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-border bg-surface p-24 shadow-2xl"
 		onclick={(e) => e.stopPropagation()}
 		onkeydown={() => {}}
 		role="dialog"
@@ -82,15 +82,15 @@
 	>
 		<h2 class="text-lg font-semibold">{isEdit ? 'Edit item' : 'New item'}</h2>
 
-		<div class="mt-5 flex flex-col gap-4">
+		<div class="mt-20 flex flex-col gap-16">
 			<TextField label="Title" bind:value={title} placeholder="e.g. GitHub" />
 			<TextField label="Username" bind:value={username} autocomplete="off" />
 
-			<label class="flex flex-col gap-1.5">
+			<label class="flex flex-col gap-6">
 				<span class="text-xs font-medium tracking-wide text-muted uppercase">Folder</span>
 				<select
 					bind:value={folderId}
-					class="rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text outline-none focus:border-accent"
+					class="rounded-lg border border-border bg-surface-2 px-12 py-8 text-sm text-text outline-none focus:border-accent"
 				>
 					<option value="">No folder</option>
 					{#each vault.folders as f (f.id)}
@@ -99,14 +99,14 @@
 				</select>
 			</label>
 
-			<div class="flex flex-col gap-1.5">
+			<div class="flex flex-col gap-6">
 				<span class="text-xs font-medium tracking-wide text-muted uppercase">Password</span>
-				<div class="flex gap-2">
+				<div class="flex gap-8">
 					<input
 						type="text"
 						bind:value={password}
 						placeholder={isEdit ? 'Leave blank to keep current' : ''}
-						class="min-w-0 flex-1 rounded-lg border border-border bg-surface-2 px-3 py-2 font-mono text-sm text-text outline-none focus:border-accent"
+						class="min-w-0 flex-1 rounded-lg border border-border bg-surface-2 px-12 py-8 font-mono text-sm text-text outline-none focus:border-accent"
 					/>
 					<Button variant="ghost" onclick={generate}>Generate</Button>
 				</div>
@@ -116,31 +116,31 @@
 							Reveal current password
 						</button>
 					{:else}
-						<div class="rounded-md bg-surface-2 px-3 py-2 font-mono text-sm text-accent break-all">
+						<div class="rounded-md bg-surface-2 px-12 py-8 font-mono text-sm text-accent break-all">
 							{revealed}
-							<span class="ml-2 text-xs text-muted">(hides in 40s)</span>
+							<span class="ml-8 text-xs text-muted">(hides in 40s)</span>
 						</div>
 					{/if}
 				{/if}
 			</div>
 
-			<label class="flex flex-col gap-1.5">
+			<label class="flex flex-col gap-6">
 				<span class="text-xs font-medium tracking-wide text-muted uppercase">Notes</span>
 				<textarea
 					bind:value={notes}
 					rows="3"
-					class="resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text outline-none focus:border-accent"
+					class="resize-none rounded-lg border border-border bg-surface-2 px-12 py-8 text-sm text-text outline-none focus:border-accent"
 				></textarea>
 			</label>
 
 			{#if history && history.length > 0}
-				<div class="rounded-lg border border-border bg-surface-2 p-3">
-					<div class="mb-2 text-xs font-medium tracking-wide text-muted uppercase">
+				<div class="rounded-lg border border-border bg-surface-2 p-12">
+					<div class="mb-8 text-xs font-medium tracking-wide text-muted uppercase">
 						Password history
 					</div>
-					<ul class="flex flex-col gap-1">
+					<ul class="flex flex-col gap-4">
 						{#each history as h (h.u)}
-							<li class="flex justify-between gap-3 text-xs">
+							<li class="flex justify-between gap-12 text-xs">
 								<span class="truncate font-mono text-text">{h.p}</span>
 								<span class="shrink-0 text-muted">{new Date(h.u).toLocaleDateString()}</span>
 							</li>
@@ -150,13 +150,13 @@
 			{/if}
 		</div>
 
-		<div class="mt-6 flex items-center justify-between">
+		<div class="mt-24 flex items-center justify-between">
 			{#if isEdit}
 				<Button variant="danger" onclick={remove}>Delete</Button>
 			{:else}
 				<span></span>
 			{/if}
-			<div class="flex gap-2">
+			<div class="flex gap-8">
 				<Button variant="ghost" onclick={onclose}>Cancel</Button>
 				<Button disabled={!title.trim() || saving || loading} onclick={save}>
 					{saving ? 'Saving…' : 'Save'}

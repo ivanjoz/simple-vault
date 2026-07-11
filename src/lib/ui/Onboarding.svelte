@@ -16,15 +16,15 @@
 	}
 </script>
 
-<div class="flex min-h-screen items-center justify-center p-6">
-	<div class="w-full max-w-sm rounded-2xl border border-border bg-surface p-7 shadow-xl">
+<div class="flex min-h-screen items-center justify-center p-24">
+	<div class="w-full max-w-sm rounded-2xl border border-border bg-surface p-28 shadow-xl">
 		<h1 class="text-xl font-semibold">Create your vault</h1>
-		<p class="mt-2 text-sm text-muted">
+		<p class="mt-8 text-sm text-muted">
 			Choose a master password. It never leaves your device and cannot be recovered — you'll get a
 			recovery key next.
 		</p>
 
-		<div class="mt-6 flex flex-col gap-4">
+		<div class="mt-24 flex flex-col gap-16">
 			<TextField
 				label="Master password"
 				type="password"

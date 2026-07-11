@@ -12,15 +12,26 @@
 	}
 </script>
 
-<aside class="flex w-60 shrink-0 flex-col border-r border-border bg-surface">
-	<div class="flex items-center gap-2 px-4 py-4">
-		<div class="h-6 w-6 rounded-md bg-accent"></div>
-		<span class="font-semibold">Simple Vault</span>
+<aside class="flex w-240 shrink-0 flex-col border-r border-border bg-surface">
+	<div class="flex items-center justify-between gap-8 px-16 py-16">
+		<div class="flex items-center gap-8">
+			<img src="/icon-192.png" alt="Vault logo" class="h-24 w-24" />
+			<span class="font-semibold">Vault</span>
+		</div>
+		<button
+			type="button"
+			aria-label="Settings"
+			title="Settings"
+			onclick={() => (vault.settingsOpen = true)}
+			class="flex h-32 w-32 items-center justify-center rounded-lg text-muted transition-colors hover:bg-surface-2 hover:text-text"
+		>
+			<span class="icon-[lucide--settings] text-[20px]"></span>
+		</button>
 	</div>
 
-	<nav class="flex-1 overflow-y-auto px-2">
+	<nav class="flex-1 overflow-y-auto px-8">
 		<button
-			class="mb-1 w-full rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-surface-2 {vault.selectedFolderId ===
+			class="mb-4 w-full rounded-lg px-12 py-8 text-left text-sm transition-colors hover:bg-surface-2 {vault.selectedFolderId ===
 			null
 				? 'bg-surface-2 text-text'
 				: 'text-muted'}"
@@ -32,7 +43,7 @@
 
 		{#each vault.folders as folder (folder.id)}
 			<button
-				class="mb-1 w-full truncate rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-surface-2 {vault.selectedFolderId ===
+				class="mb-4 w-full truncate rounded-lg px-12 py-8 text-left text-sm transition-colors hover:bg-surface-2 {vault.selectedFolderId ===
 				folder.id
 					? 'bg-surface-2 text-text'
 					: 'text-muted'}"
@@ -46,39 +57,43 @@
 		{/each}
 	</nav>
 
-	<div class="border-t border-border p-3">
-		<div class="flex gap-2">
+	<div class="border-t border-border p-12">
+		<div class="flex gap-8">
 			<input
 				bind:value={newFolder}
 				placeholder="New folder"
 				onkeydown={(e) => e.key === 'Enter' && addFolder()}
-				class="min-w-0 flex-1 rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm outline-none focus:border-accent"
+				class="min-w-0 flex-1 rounded-lg border border-border bg-surface-2 px-8 py-6 text-sm outline-none focus:border-accent"
 			/>
 			<Button variant="ghost" onclick={addFolder}>+</Button>
 		</div>
 	</div>
 
-	<div class="border-t border-border p-3">
-		<Button variant="ghost" full disabled={vault.syncing} onclick={() => vault.syncNow()}>
-			{#if vault.syncing}
-				Syncing…
-			{:else if vault.driveConnected}
-				Sync now
-			{:else}
-				Connect Drive
-			{/if}
-		</Button>
+	<div class="border-t border-border p-12">
+		<div class="flex gap-8">
+			<Button variant="ghost" full disabled={vault.syncing} onclick={() => vault.syncNow()}>
+				<span
+					class="icon-[lucide--refresh-cw] text-[16px] {vault.syncing ? 'animate-spin' : ''}"
+				></span>
+				{#if vault.syncing}
+					Syncing…
+				{:else if vault.driveConnected}
+					Sync Data
+				{:else}
+					Connect Drive
+				{/if}
+			</Button>
+			<Button variant="ghost" full onclick={() => vault.lock()}>
+				<span class="icon-[lucide--lock] text-[16px]"></span>
+				Lock
+			</Button>
+		</div>
 		{#if vault.syncError}
-			<p class="mt-2 px-1 text-xs text-danger">{vault.syncError}</p>
+			<p class="mt-8 px-4 text-xs text-danger">{vault.syncError}</p>
 		{:else if vault.lastSync}
-			<p class="mt-2 px-1 text-xs text-muted">
+			<p class="mt-8 px-4 text-xs text-muted">
 				Synced {new Date(vault.lastSync).toLocaleTimeString()}
 			</p>
 		{/if}
-	</div>
-
-	<div class="flex gap-2 border-t border-border p-3">
-		<Button variant="ghost" full onclick={() => (vault.settingsOpen = true)}>Settings</Button>
-		<Button variant="ghost" full onclick={() => vault.lock()}>Lock</Button>
 	</div>
 </aside>

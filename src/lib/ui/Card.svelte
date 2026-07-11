@@ -21,7 +21,7 @@
 	tabindex="0"
 	onclick={() => onopen(card)}
 	onkeydown={open}
-	class="flex cursor-pointer flex-col gap-3 rounded-xl border border-border bg-surface p-4 transition-colors hover:border-accent"
+	class="flex cursor-pointer flex-col gap-6 rounded-xl border border-border bg-surface px-12 py-10 transition-colors hover:border-accent"
 >
 	<div class="min-w-0">
 		<div class="truncate font-medium text-text">{card.title || 'Untitled'}</div>
@@ -33,7 +33,7 @@
 		<button
 			onclick={copy}
 			title="Copy password"
-			class="flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors {copied
+			class="flex items-center gap-4 rounded-md px-8 py-4 text-xs transition-colors {copied
 				? 'text-success'
 				: 'text-muted hover:bg-surface-2 hover:text-text'}"
 		>
