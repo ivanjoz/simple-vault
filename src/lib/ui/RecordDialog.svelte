@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
+	import { onDestroy, untrack } from 'svelte';
 	import { vault } from '$lib/app/vault.svelte';
 	import { generatePassword } from '$lib/app/password';
 	import { SECRET_TTL_MS, expireAfter, type Cancellable } from '$lib/session/ttl';
@@ -9,11 +9,15 @@
 
 	let { card, onclose }: { card: CardView | null; onclose: () => void } = $props();
 
-	const isEdit = card !== null;
+	// Snapshot the card once at mount: the form fields are seeded from it and
+	// then edited independently, so we intentionally capture only the initial
+	// value (the dialog is destroyed/recreated each time it opens).
+	const initialCard = untrack(() => card);
+	const isEdit = initialCard !== null;
 
-	let title = $state(card?.title ?? '');
-	let username = $state(card?.username ?? '');
-	let folderId = $state(card?.folderId ?? '');
+	let title = $state(initialCard?.title ?? '');
+	let username = $state(initialCard?.username ?? '');
+	let folderId = $state(initialCard?.folderId ?? '');
 	let notes = $state('');
 	// For a new record we generate a strong password up front; for edits, blank
 	// means "keep current" so the stored password is never loaded unnecessarily.
@@ -26,8 +30,8 @@
 	let revealTimer: Cancellable | null = null;
 
 	// Load notes (and history) for an existing record. The password is NOT kept.
-	if (isEdit && card) {
-		void vault.getSecret(card.id).then((secret) => {
+	if (isEdit && initialCard) {
+		void vault.getSecret(initialCard.id).then((secret) => {
 			loading = false;
 			if (secret) notes = secret.notes;
 		});
