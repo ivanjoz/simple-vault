@@ -10,6 +10,9 @@
 	// undefined = closed, null = new item, CardView = editing that item.
 	let editing = $state<CardView | null | undefined>(undefined);
 
+	// Mobile-only: whether the sidebar drawer is open.
+	let sidebarOpen = $state(false);
+
 	function openNew() {
 		editing = null;
 	}
@@ -22,10 +25,25 @@
 </script>
 
 <div class="flex h-screen overflow-hidden">
-	<Sidebar />
+	<Sidebar open={sidebarOpen} onclose={() => (sidebarOpen = false)} />
 
-	<main class="flex flex-1 flex-col overflow-hidden">
-		<div class="flex items-center gap-12 border-b border-border p-16">
+	<main class="flex min-w-0 flex-1 flex-col overflow-hidden">
+		<!-- Static top bar, mobile only. Fixed height, contents vertically centered. -->
+		<div class="flex h-56 shrink-0 items-center gap-12 border-b border-border px-12 md:hidden">
+			<button
+				type="button"
+				aria-label="Open menu"
+				title="Menu"
+				onclick={() => (sidebarOpen = true)}
+				class="flex h-36 w-36 items-center justify-center rounded-lg text-muted transition-colors hover:bg-surface-2 hover:text-text"
+			>
+				<span class="icon-[lucide--menu] text-[22px]"></span>
+			</button>
+			<img src="/icon-192.png" alt="Vault logo" class="h-24 w-24" />
+			<span class="font-semibold">Vault</span>
+		</div>
+
+		<div class="flex items-center gap-12 border-b border-border p-10">
 			<div class="relative flex-1">
 				<svg
 					class="pointer-events-none absolute top-1/2 left-12 -translate-y-1/2 text-muted"
