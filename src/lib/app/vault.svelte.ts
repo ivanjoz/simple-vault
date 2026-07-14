@@ -4,20 +4,43 @@
 
 import { browser } from '$app/environment';
 import { PUBLIC_GOOGLE_CLIENT_ID } from '$env/static/public';
-import type { VaultEnvelope } from '$lib/crypto';
+import type { Bytes, VaultHeader } from '$lib/crypto';
+import { base64ToBytes, bytesToBase64, unwrapDek, wrapDek } from '$lib/crypto';
 import {
-	META_DRIVE_FILE_ID,
-	META_ENVELOPE,
+	META_DRIVE_FOLDER_IDS,
+	META_DRIVE_FOLDER_VERSIONS,
+	META_DRIVE_HEADER_ID,
+	META_HEADER,
 	META_LAST_SYNC,
+	META_LOCAL_UNLOCK,
 	VaultRepository
 } from '$lib/db/repository';
+import type { LocalUnlockKind, LocalUnlocker } from '$lib/unlock/types';
+import { enrollWebAuthn, isPlatformAuthenticatorAvailable, unlockWebAuthn } from '$lib/unlock/webauthn';
+import { derivePinKey, enrollPinKey } from '$lib/unlock/pin';
 import { requestAccessToken } from '$lib/drive/auth';
-import { createVaultFile, downloadJson, findVaultFile, updateFile } from '$lib/drive/client';
-import { downloadText } from '$lib/app/download';
+import {
+	createBinaryFile,
+	createJsonFile,
+	downloadBytes,
+	downloadJson,
+	findHeaderFile,
+	folderFileName,
+	folderIdFromFileName,
+	HEADER_FILE_NAME,
+	listVaultFiles,
+	updateBinaryFile,
+	updateJsonFile
+} from '$lib/drive/client';
+import { downloadBytes as downloadBinary } from '$lib/app/download';
 import { copyWithAutoClear } from '$lib/session/clipboard';
 import { mergeById } from '$lib/sync/delta';
 import { KeyClient } from '$lib/worker/keyClient';
 import type { CardView, Folder, HistoryItem, PlainRecord, SecretPlain } from '$lib/vault/types';
+import type { StoredRecord } from '$lib/vault/types';
+import { decodeFolderFile, encodeFolderFile } from '$lib/vault/folderFile';
+import { createId, ROOT_FOLDER_ID, updatedNow } from '$lib/vault/record';
+import { decodeBackup, encodeBackup } from '$lib/vault/backup';
 
 export interface RecordInput {
 	id?: string;
@@ -25,6 +48,7 @@ export interface RecordInput {
 	title: string;
 	username: string;
 	password: string;
+	url: string;
 	notes: string;
 }
 
@@ -34,6 +58,22 @@ const HISTORY_LIMIT = 50;
 const SESSION_DEK_KEY = 'svault.session.dek';
 const SESSION_TOKEN_KEY = 'svault.session.driveToken';
 const PERSIST_PREF_KEY = 'svault.session.persist';
+
+// Auto-lock policy: how long the app may sit in the background before it
+// re-locks. Stored in localStorage as milliseconds; -1 means "never".
+const AUTOLOCK_MS_KEY = 'svault.autolock.ms';
+const HIDDEN_AT_KEY = 'svault.autolock.hiddenAt';
+const DEFAULT_AUTOLOCK_MS = 30_000;
+/** Preset options surfaced in Settings (label + ms; -1 = never). */
+export const AUTOLOCK_OPTIONS: { label: string; ms: number }[] = [
+	{ label: 'Immediately', ms: 0 },
+	{ label: 'After 30 seconds', ms: 30_000 },
+	{ label: 'After 1 minute', ms: 60_000 },
+	{ label: 'After 5 minutes', ms: 300_000 },
+	{ label: 'Never', ms: -1 }
+];
+/** Failed PIN attempts before the PIN path locks out (master password still works). */
+const PIN_MAX_ATTEMPTS = 5;
 
 export type VaultStatus = 'loading' | 'connect' | 'onboarding' | 'locked' | 'unlocked';
 export type UnlockMethod = 'password' | 'recovery';
@@ -66,7 +106,14 @@ class VaultState {
 	persistSession = $state(true);
 	/** Whether the settings panel is open. */
 	settingsOpen = $state(false);
+	/** Enrolled device-local unlocker kind, or null if none is set up here. */
+	localUnlockKind = $state<LocalUnlockKind | null>(null);
+	/** Whether this device has a user-verifying platform authenticator (biometrics). */
+	platformAuthAvailable = $state(false);
+	/** Background auto-lock delay in ms (-1 = never). */
+	autoLockMs = $state<number>(DEFAULT_AUTOLOCK_MS);
 	#driveToken: string | null = null;
+	#autoLockInstalled = false;
 
 	visibleCards = $derived.by(() => {
 		const q = this.search.trim().toLowerCase();
@@ -95,8 +142,12 @@ class VaultState {
 	async init(): Promise<void> {
 		if (!browser) return;
 		this.persistSession = localStorage.getItem(PERSIST_PREF_KEY) !== '0';
+		this.autoLockMs = this.#readAutoLockMs();
+		this.#installAutoLock();
+		void this.#detectPlatformAuth();
 		try {
 			this.lastSync = (await this.repo.getMeta<number>(META_LAST_SYNC)) ?? null;
+			await this.#loadLocalUnlockKind();
 
 			// Resume if the DEK is still available: either a SharedWorker kept it,
 			// or (opt-in) it was persisted in sessionStorage for this tab.
@@ -104,19 +155,22 @@ class VaultState {
 				// The worker's key can outlive the on-disk envelope (e.g. the user
 				// cleared browser storage while a tab — and thus the SharedWorker —
 				// stayed alive). Only resume if the envelope is actually still there;
-				// otherwise the key is stale, so drop it and start clean.
-				const envelope = await this.repo.getMeta<VaultEnvelope>(META_ENVELOPE);
-				if (envelope) {
+				// otherwise the key is stale, so drop it and start clean. Also honour
+				// the auto-lock policy: if the app spent longer than the configured
+				// delay in the background, re-lock instead of silently resuming.
+				const header = await this.repo.getMeta<VaultHeader>(META_HEADER);
+				if (header && !this.#backgroundLockExpired()) {
+					this.#clearHiddenAt();
 					await this.loadCards();
 					this.status = 'unlocked';
 					void this.#trySilentConnect(); // reconnect token only — no sync on reload
 					return;
 				}
-				await this.lock(); // clear the stale worker key; falls through to connect
+				await this.lock(); // stale key or auto-lock expired; falls through below
 			}
 
-			const envelope = await this.repo.getMeta<VaultEnvelope>(META_ENVELOPE);
-			this.status = envelope ? 'locked' : 'connect';
+			const header = await this.repo.getMeta<VaultHeader>(META_HEADER);
+			this.status = header ? 'locked' : 'connect';
 		} catch (err) {
 			this.error = errorMessage(err);
 			this.status = 'connect';
@@ -129,11 +183,11 @@ class VaultState {
 		this.error = null;
 		try {
 			const token = await this.#connectDrive();
-			const file = await findVaultFile(token);
+			const file = await findHeaderFile(token);
 			if (file) {
-				const envelope = await downloadJson<VaultEnvelope>(token, file.id);
-				await this.repo.setMeta(META_ENVELOPE, envelope);
-				await this.repo.setMeta(META_DRIVE_FILE_ID, file.id);
+				const header = await downloadJson<VaultHeader>(token, file.id);
+				await this.repo.setMeta(META_HEADER, header);
+				await this.repo.setMeta(META_DRIVE_HEADER_ID, file.id);
 				this.status = 'locked';
 			} else {
 				this.status = 'onboarding';
@@ -155,12 +209,18 @@ class VaultState {
 		this.busy = true;
 		this.error = null;
 		try {
-			const { envelope, recoveryKey } = await this.client.call('create', { masterPassword });
-			await this.repo.setMeta(META_ENVELOPE, envelope);
+			const { header, recoveryKey } = await this.client.call('create', { masterPassword });
+			await this.repo.setMeta(META_HEADER, header);
+			const now = updatedNow();
+			const { folders } = await this.client.call('encryptFolders', {
+				folders: [{ id: ROOT_FOLDER_ID, name: '', updated: now, status: 'active' }]
+			});
+			await this.repo.putFolders(folders);
 			// If Drive is connected, establish the remote vault file immediately.
 			if (this.#driveToken) {
-				const id = await createVaultFile(this.#driveToken, envelope);
-				await this.repo.setMeta(META_DRIVE_FILE_ID, id);
+				const id = await createJsonFile(this.#driveToken, HEADER_FILE_NAME, header);
+				await this.repo.setMeta(META_DRIVE_HEADER_ID, id);
+				await this.#uploadFolder(ROOT_FOLDER_ID);
 			}
 			this.recoveryKeyOnce = recoveryKey;
 			await this.loadCards();
@@ -177,22 +237,18 @@ class VaultState {
 		this.busy = true;
 		this.error = null;
 		try {
-			const envelope = await this.repo.getMeta<VaultEnvelope>(META_ENVELOPE);
-			if (!envelope) {
+			const header = await this.repo.getMeta<VaultHeader>(META_HEADER);
+			if (!header) {
 				this.status = 'onboarding';
 				return;
 			}
-			const { ok } = await this.client.call('unlock', { envelope, secret, method });
+			const { ok } = await this.client.call('unlock', { header, secret, method });
 			if (!ok) {
 				this.error =
 					method === 'password' ? 'Incorrect master password.' : 'Invalid recovery key.';
 				return;
 			}
-			await this.hydrateFromEnvelope();
-			await this.loadCards();
-			this.status = 'unlocked';
-			void this.#saveSession();
-			void this.#syncAfterUnlock(); // one full sync on a real unlock
+			await this.#finishUnlock();
 		} catch (err) {
 			this.error = errorMessage(err);
 		} finally {
@@ -200,9 +256,20 @@ class VaultState {
 		}
 	}
 
+	/** Shared post-unlock hydration path (used by password, recovery and local unlock). */
+	async #finishUnlock(): Promise<void> {
+		this.#clearHiddenAt();
+		await this.#decryptCachedFolderNames();
+		await this.loadCards();
+		this.status = 'unlocked';
+		void this.#saveSession();
+		void this.#syncAfterUnlock(); // one full sync on a real unlock
+	}
+
 	async lock(): Promise<void> {
 		await this.client.call('lock', {});
 		this.#clearSession();
+		this.#clearHiddenAt();
 		this.cards = [];
 		this.folders = [];
 		this.recoveryKeyOnce = null;
@@ -244,6 +311,200 @@ class VaultState {
 		if (browser) sessionStorage.removeItem(SESSION_DEK_KEY);
 	}
 
+	// --- Device-local unlock (biometrics / PIN) ------------------------------
+
+	async #detectPlatformAuth(): Promise<void> {
+		this.platformAuthAvailable = await isPlatformAuthenticatorAvailable();
+	}
+
+	async #loadLocalUnlockKind(): Promise<void> {
+		const unlocker = await this.repo.getMeta<LocalUnlocker>(META_LOCAL_UNLOCK);
+		this.localUnlockKind = unlocker ? unlocker.kind : null;
+	}
+
+	/** Raw DEK bytes for wrapping under a biometric/PIN key. Requires an unlocked vault. */
+	async #exportDekBytes(): Promise<Bytes> {
+		const { dek } = await this.client.call('exportDek', {});
+		return base64ToBytes(dek);
+	}
+
+	/** Enrol this device's platform authenticator (fingerprint/face/PIN) as an unlocker. */
+	async enrollBiometric(): Promise<boolean> {
+		this.busy = true;
+		this.error = null;
+		try {
+			const enrollment = await enrollWebAuthn();
+			if (!enrollment) {
+				this.error = "This device can't be used to unlock the app (no supported authenticator).";
+				return false;
+			}
+			const dek = await this.#exportDekBytes();
+			const wrappedDek = await wrapDek(dek, enrollment.key);
+			dek.fill(0);
+			const unlocker: LocalUnlocker = {
+				kind: 'webauthn',
+				credentialId: enrollment.credentialId,
+				prfSalt: enrollment.prfSalt,
+				wrappedDek
+			};
+			await this.repo.setMeta(META_LOCAL_UNLOCK, unlocker);
+			this.localUnlockKind = 'webauthn';
+			return true;
+		} catch (err) {
+			this.error = errorMessage(err);
+			return false;
+		} finally {
+			this.busy = false;
+		}
+	}
+
+	/** Enrol a PIN/pattern as this device's unlocker. Requires an unlocked vault. */
+	async enrollPin(pin: string): Promise<boolean> {
+		this.busy = true;
+		this.error = null;
+		try {
+			const setup = await enrollPinKey(pin);
+			const dek = await this.#exportDekBytes();
+			const wrappedDek = await wrapDek(dek, setup.key);
+			dek.fill(0);
+			const unlocker: LocalUnlocker = {
+				kind: 'pin',
+				salt: setup.salt,
+				kdf: setup.kdf,
+				wrappedDek,
+				attempts: 0
+			};
+			await this.repo.setMeta(META_LOCAL_UNLOCK, unlocker);
+			this.localUnlockKind = 'pin';
+			return true;
+		} catch (err) {
+			this.error = errorMessage(err);
+			return false;
+		} finally {
+			this.busy = false;
+		}
+	}
+
+	/** Remove this device's biometric/PIN unlocker. */
+	async disableLocalUnlock(): Promise<void> {
+		await this.repo.deleteMeta(META_LOCAL_UNLOCK);
+		this.localUnlockKind = null;
+	}
+
+	/**
+	 * Unlock via the device-local unlocker. For biometrics `pin` is ignored (the
+	 * authenticator prompts); for the PIN path the digits are required.
+	 */
+	async unlockLocal(pin?: string): Promise<void> {
+		this.busy = true;
+		this.error = null;
+		try {
+			const unlocker = await this.repo.getMeta<LocalUnlocker>(META_LOCAL_UNLOCK);
+			if (!unlocker) {
+				this.error = 'No app lock is set up on this device.';
+				return;
+			}
+
+			let kek: CryptoKey;
+			if (unlocker.kind === 'webauthn') {
+				kek = await unlockWebAuthn(unlocker.credentialId, unlocker.prfSalt);
+			} else {
+				if (unlocker.attempts >= PIN_MAX_ATTEMPTS) {
+					this.error = 'Too many attempts. Unlock with your master password.';
+					return;
+				}
+				if (!pin) {
+					this.error = 'Enter your PIN.';
+					return;
+				}
+				kek = await derivePinKey(pin, unlocker.salt, unlocker.kdf);
+			}
+
+			let dekBytes: Bytes;
+			try {
+				dekBytes = await unwrapDek(unlocker.wrappedDek, kek);
+			} catch {
+				if (unlocker.kind === 'pin') {
+					const attempts = unlocker.attempts + 1;
+					await this.repo.setMeta(META_LOCAL_UNLOCK, { ...unlocker, attempts });
+					const left = PIN_MAX_ATTEMPTS - attempts;
+					this.error =
+						left > 0
+							? `Incorrect PIN. ${left} attempt${left === 1 ? '' : 's'} left.`
+							: 'Too many attempts. Unlock with your master password.';
+				} else {
+					this.error = 'Could not unlock with this device.';
+				}
+				return;
+			}
+
+			const dekB64 = bytesToBase64(dekBytes);
+			dekBytes.fill(0);
+			const { ok } = await this.client.call('restoreDek', { dek: dekB64 });
+			if (!ok) {
+				this.error = 'Failed to restore the vault key.';
+				return;
+			}
+			if (unlocker.kind === 'pin' && unlocker.attempts) {
+				await this.repo.setMeta(META_LOCAL_UNLOCK, { ...unlocker, attempts: 0 });
+			}
+			await this.#finishUnlock();
+		} catch (err) {
+			this.error = errorMessage(err);
+		} finally {
+			this.busy = false;
+		}
+	}
+
+	// --- Auto-lock -----------------------------------------------------------
+
+	setAutoLockMs(ms: number): void {
+		this.autoLockMs = ms;
+		if (browser) localStorage.setItem(AUTOLOCK_MS_KEY, String(ms));
+	}
+
+	#readAutoLockMs(): number {
+		const raw = localStorage.getItem(AUTOLOCK_MS_KEY);
+		if (raw === null) return DEFAULT_AUTOLOCK_MS;
+		const n = Number(raw);
+		return Number.isFinite(n) ? n : DEFAULT_AUTOLOCK_MS;
+	}
+
+	#installAutoLock(): void {
+		if (this.#autoLockInstalled || !browser) return;
+		this.#autoLockInstalled = true;
+		document.addEventListener('visibilitychange', () => {
+			if (document.visibilityState === 'hidden') this.#onHidden();
+			else this.#onVisible();
+		});
+	}
+
+	#onHidden(): void {
+		if (this.autoLockMs < 0) return; // never
+		if (browser) localStorage.setItem(HIDDEN_AT_KEY, String(Date.now()));
+		// Immediate policy: drop the key the moment we lose focus.
+		if (this.autoLockMs === 0 && this.status === 'unlocked') void this.lock();
+	}
+
+	#onVisible(): void {
+		if (this.status === 'unlocked' && this.#backgroundLockExpired()) void this.lock();
+		else this.#clearHiddenAt();
+	}
+
+	/** True if the app was backgrounded longer than the configured auto-lock delay. */
+	#backgroundLockExpired(): boolean {
+		if (this.autoLockMs < 0 || !browser) return false;
+		const raw = localStorage.getItem(HIDDEN_AT_KEY);
+		if (!raw) return false;
+		const hiddenAt = Number(raw);
+		if (!Number.isFinite(hiddenAt)) return false;
+		return Date.now() - hiddenAt >= this.autoLockMs;
+	}
+
+	#clearHiddenAt(): void {
+		if (browser) localStorage.removeItem(HIDDEN_AT_KEY);
+	}
+
 	dismissRecoveryKey(): void {
 		this.recoveryKeyOnce = null;
 	}
@@ -251,24 +512,22 @@ class VaultState {
 	/** Load active records' metadata (title/username) for card rendering. */
 	async loadCards(): Promise<void> {
 		const records = await this.repo.activeRecords();
-		const { metas } = await this.client.call('decryptMetas', {
-			items: records.map((r) => r.enc_meta)
-		});
+		const { metas } = await this.client.call('decryptMetas', { records });
 		this.cards = records.map((r, i) => ({
 			id: r.id,
-			folderId: r.folderId,
+			folderId: r.folderId === ROOT_FOLDER_ID ? '' : r.folderId,
 			updated: r.updated,
 			title: metas[i].title,
 			username: metas[i].username
 		}));
-		this.folders = await this.repo.activeFolders();
+		this.folders = (await this.repo.activeFolders()).filter((folder) => folder.id !== ROOT_FOLDER_ID);
 	}
 
 	/** Decrypt one entry's password and copy it, clearing after the 40 s TTL. */
 	async copyPassword(id: string): Promise<void> {
 		const record = await this.repo.getRecord(id);
 		if (!record) return;
-		const { secret } = await this.client.call('decryptSecret', { blob: record.enc_secret });
+		const { secret } = await this.client.call('decryptSecret', { record });
 		const handle = copyWithAutoClear(secret.password);
 		await handle.written;
 		this.copiedId = id;
@@ -284,45 +543,68 @@ class VaultState {
 	async getSecret(id: string): Promise<SecretPlain | null> {
 		const record = await this.repo.getRecord(id);
 		if (!record) return null;
-		const { secret } = await this.client.call('decryptSecret', { blob: record.enc_secret });
+		const { secret } = await this.client.call('decryptSecret', { record });
 		return secret;
+	}
+
+	/** Decrypt password history only for an explicit reveal/edit that needs it. */
+	async getHistory(id: string): Promise<HistoryItem[]> {
+		const record = await this.repo.getRecord(id);
+		if (!record) return [];
+		return (await this.client.call('decryptHistory', { record })).history;
 	}
 
 	/** Create or update a record, maintaining password history on change. */
 	async saveRecord(input: RecordInput): Promise<void> {
-		const now = Date.now();
-		const id = input.id ?? crypto.randomUUID();
+		const now = updatedNow();
+		const id = input.id ?? createId();
+		const folderId = input.folderId || ROOT_FOLDER_ID;
 		let history: HistoryItem[] = [];
 		let password = input.password;
+		let previousFolderId: string | null = null;
+		let existing: StoredRecord | undefined;
+		let historyChanged = false;
 
 		if (input.id) {
-			const existing = await this.repo.getRecord(input.id);
+			existing = await this.repo.getRecord(input.id);
 			if (existing) {
-				const { secret } = await this.client.call('decryptSecret', { blob: existing.enc_secret });
-				history = secret.history;
+				previousFolderId = existing.folderId;
+				const { secret } = await this.client.call('decryptSecret', { record: existing });
 				if (input.password === '') {
 					// Blank means "keep the current password" (the editor never held it).
 					password = secret.password;
 				} else if (secret.password !== input.password) {
+					history = (await this.client.call('decryptHistory', { record: existing })).history;
 					history = [{ p: secret.password, u: existing.updated }, ...history].slice(0, HISTORY_LIMIT);
+					historyChanged = true;
+				}
+				if (existing.folderId !== folderId && !historyChanged && existing.enc_history) {
+					history = (await this.client.call('decryptHistory', { record: existing })).history;
 				}
 			}
 		}
 
 		const plain: PlainRecord = {
 			id,
-			folderId: input.folderId,
+			folderId,
 			updated: now,
 			status: 'active',
 			title: input.title,
 			username: input.username,
 			password,
+			url: input.url,
 			notes: input.notes,
-			history
+			history,
+			historyUpdated: historyChanged ? now : existing?.historyUpdated
 		};
 		const { stored } = await this.client.call('encryptRecords', { records: [plain] });
+		if (existing?.enc_history && !historyChanged && existing.folderId === folderId) {
+			stored[0].enc_history = existing.enc_history;
+			stored[0].historyUpdated = existing.historyUpdated;
+		}
 		await this.repo.putRecords(stored);
-		await this.persist();
+		await this.#uploadFolder(folderId);
+		if (previousFolderId && previousFolderId !== folderId) await this.#uploadFolder(previousFolderId);
 		await this.loadCards();
 	}
 
@@ -330,30 +612,34 @@ class VaultState {
 	async deleteRecord(id: string): Promise<void> {
 		const existing = await this.repo.getRecord(id);
 		if (!existing) return;
-		await this.repo.putRecords([{ ...existing, status: 'deleted', updated: Date.now() }]);
-		await this.persist();
+		const [{ metas }, { secret }] = await Promise.all([
+			this.client.call('decryptMetas', { records: [existing] }),
+			this.client.call('decryptSecret', { record: existing })
+		]);
+		const tombstone: PlainRecord = {
+			id: existing.id,
+			folderId: existing.folderId,
+			updated: updatedNow(),
+			status: 'deleted',
+			title: metas[0].title,
+			username: metas[0].username,
+			password: secret.password,
+			url: secret.url,
+			notes: secret.notes,
+			history: []
+		};
+		await this.repo.putRecords((await this.client.call('encryptRecords', { records: [tombstone] })).stored);
+		await this.#uploadFolder(existing.folderId);
 		await this.loadCards();
 	}
 
 	async addFolder(name: string): Promise<string> {
-		const folder: Folder = { id: crypto.randomUUID(), name, updated: Date.now(), status: 'active' };
-		await this.repo.putFolders([folder]);
-		await this.persist();
-		this.folders = await this.repo.activeFolders();
+		const folder: Folder = { id: createId(), name, updated: updatedNow(), status: 'active' };
+		const { folders } = await this.client.call('encryptFolders', { folders: [folder] });
+		await this.repo.putFolders(folders);
+		await this.#uploadFolder(folder.id);
+		this.folders = (await this.repo.activeFolders()).filter((item) => item.id !== ROOT_FOLDER_ID);
 		return folder.id;
-	}
-
-	/** Populate IndexedDB records from the cached envelope's ciphertext (delta). */
-	private async hydrateFromEnvelope(): Promise<void> {
-		const envelope = await this.repo.getMeta<VaultEnvelope>(META_ENVELOPE);
-		if (!envelope) return;
-		const localUpdated = await this.repo.localUpdatedMap();
-		const { stored, folders } = await this.client.call('ingestCiphertext', {
-			blob: envelope.ciphertext,
-			localUpdated
-		});
-		await this.repo.putRecords(stored);
-		await this.repo.putFolders(mergeById(await this.repo.allFolders(), folders));
 	}
 
 	/** Connect Drive (if needed) and run a full two-way sync. */
@@ -362,36 +648,41 @@ class VaultState {
 		this.syncError = null;
 		try {
 			const token = this.#driveToken ?? (await this.#connectDrive());
-			const envelope = await this.repo.getMeta<VaultEnvelope>(META_ENVELOPE);
-			if (!envelope) return;
+			const header = await this.repo.getMeta<VaultHeader>(META_HEADER);
+			if (!header) return;
+			const files = await listVaultFiles(token);
+			const headerFile = files.find((file) => file.name === HEADER_FILE_NAME);
+			if (headerFile) await this.repo.setMeta(META_DRIVE_HEADER_ID, headerFile.id);
+			else await this.#uploadHeader(header);
 
-			// Locate the remote file (prefer the cached id).
-			let fileId = await this.repo.getMeta<string>(META_DRIVE_FILE_ID);
-			if (!fileId) fileId = (await findVaultFile(token))?.id;
-
-			// Pull: merge remote changes into IndexedDB (delta).
-			if (fileId) {
-				const remote = await downloadJson<VaultEnvelope>(token, fileId);
-				const localUpdated = await this.repo.localUpdatedMap();
-				const { stored, folders } = await this.client.call('ingestCiphertext', {
-					blob: remote.ciphertext,
-					localUpdated
-				});
-				await this.repo.putRecords(stored);
-				await this.repo.putFolders(mergeById(await this.repo.allFolders(), folders));
+			const ids: Record<string, string> = {};
+			const versions: Record<string, string> = {};
+			const remoteBytes = new Map<string, Bytes>();
+			let remoteRecords: StoredRecord[] = [];
+			for (const file of files) {
+				const folderId = folderIdFromFileName(file.name);
+				if (!folderId) continue;
+				ids[folderId] = file.id;
+				if (file.version) versions[folderId] = file.version;
+				const bytes = await downloadBytes(token, file.id);
+				remoteBytes.set(folderId, bytes);
+				const decoded = decodeFolderFile(bytes);
+				if (decoded.folder.id !== folderId) throw new Error('folder filename/content mismatch');
+				const { folders } = await this.client.call('decryptFolders', { folders: [decoded.folder] });
+				const localFolder = await this.repo.getFolder(folderId);
+				await this.repo.putFolders(mergeById(localFolder ? [localFolder] : [], folders));
+				remoteRecords = mergeStoredRecords(remoteRecords, decoded.records);
 			}
+			await this.repo.putRecords(mergeStoredRecords(await this.repo.allRecords(), remoteRecords));
+			await this.repo.setMeta(META_DRIVE_FOLDER_IDS, ids);
+			await this.repo.setMeta(META_DRIVE_FOLDER_VERSIONS, versions);
 
-			// Push: rebuild the merged ciphertext and upload.
-			const [records, folders] = await Promise.all([
-				this.repo.allRecords(),
-				this.repo.allFolders()
-			]);
-			const { blob } = await this.client.call('exportCiphertext', { stored: records, folders });
-			envelope.ciphertext = blob;
-			envelope.updated = Date.now();
-			if (fileId) await updateFile(token, fileId, envelope);
-			else await this.repo.setMeta(META_DRIVE_FILE_ID, await createVaultFile(token, envelope));
-			await this.repo.setMeta(META_ENVELOPE, envelope);
+			// Upload only folder files whose merged binary content differs from Drive.
+			for (const folder of await this.repo.allFolders()) {
+				const bytes = encodeFolderFile(folder, await this.repo.recordsForFolder(folder.id));
+				const remote = remoteBytes.get(folder.id);
+				if (!remote || !sameBytes(bytes, remote)) await this.#uploadFolder(folder.id);
+			}
 
 			const now = Date.now();
 			await this.repo.setMeta(META_LAST_SYNC, now);
@@ -409,22 +700,27 @@ class VaultState {
 		this.busy = true;
 		this.error = null;
 		try {
-			const envelope = await this.repo.getMeta<VaultEnvelope>(META_ENVELOPE);
-			if (!envelope) return false;
+			const header = await this.repo.getMeta<VaultHeader>(META_HEADER);
+			if (!header) return false;
 			const [stored, folders] = await Promise.all([
 				this.repo.allRecords(),
 				this.repo.allFolders()
 			]);
 			const res = await this.client.call('changeMasterPassword', {
 				newPassword,
-				currentEnvelope: envelope,
+				currentHeader: header,
 				stored,
 				folders
 			});
 			await this.repo.putRecords(res.stored); // re-encrypted with the new DEK
-			await this.repo.setMeta(META_ENVELOPE, res.envelope);
+			await this.repo.putFolders(res.folders);
+			await this.repo.setMeta(META_HEADER, res.header);
 			await this.#saveSession(); // DEK changed → refresh persisted copy
-			await this.#uploadEnvelope(res.envelope); // overwrite remote (no pull: it's stale-keyed)
+			// The DEK rotated, so any biometric/PIN unlocker now wraps the old key.
+			// Drop it; the user must re-enable app lock (it'll re-wrap the new DEK).
+			if (this.localUnlockKind) await this.disableLocalUnlock();
+			await this.#uploadHeader(res.header);
+			for (const folder of res.folders) await this.#uploadFolder(folder.id);
 			await this.loadCards();
 			return true;
 		} catch (err) {
@@ -440,11 +736,11 @@ class VaultState {
 		this.busy = true;
 		this.error = null;
 		try {
-			const envelope = await this.repo.getMeta<VaultEnvelope>(META_ENVELOPE);
-			if (!envelope) return false;
-			const res = await this.client.call('regenerateRecoveryKey', { currentEnvelope: envelope });
-			await this.repo.setMeta(META_ENVELOPE, res.envelope);
-			await this.#uploadEnvelope(res.envelope);
+			const header = await this.repo.getMeta<VaultHeader>(META_HEADER);
+			if (!header) return false;
+			const res = await this.client.call('regenerateRecoveryKey', { currentHeader: header });
+			await this.repo.setMeta(META_HEADER, res.header);
+			await this.#uploadHeader(res.header);
 			this.recoveryKeyOnce = res.recoveryKey;
 			return true;
 		} catch (err) {
@@ -455,17 +751,28 @@ class VaultState {
 		}
 	}
 
-	/** Download the encrypted envelope as a backup file. */
+	/** Download a binary v2 backup. Folder bytes are copied without Base64. */
 	async exportVault(): Promise<void> {
-		const envelope = await this.repo.getMeta<VaultEnvelope>(META_ENVELOPE);
-		if (envelope) downloadText('simple-vault-backup.json', JSON.stringify(envelope, null, 2));
+		const header = await this.repo.getMeta<VaultHeader>(META_HEADER);
+		if (!header) return;
+		const folders: Bytes[] = [];
+		for (const folder of await this.repo.allFolders()) {
+			folders.push(encodeFolderFile(folder, await this.repo.recordsForFolder(folder.id)));
+		}
+		downloadBinary('simple-vault-backup.svault', encodeBackup(header, folders));
 	}
 
-	/** Replace the local vault with an imported encrypted envelope, then re-lock. */
-	async importVault(json: string): Promise<void> {
-		const envelope = JSON.parse(json) as VaultEnvelope;
+	/** Validate and replace local data with an imported v2 backup, then re-lock. */
+	async importVault(bytes: Bytes): Promise<void> {
+		const bundle = decodeBackup(bytes);
+		const decoded = bundle.folders.map(decodeFolderFile);
 		await this.repo.clear();
-		await this.repo.setMeta(META_ENVELOPE, envelope);
+		this.localUnlockKind = null; // the imported vault has a different DEK
+		await this.repo.setMeta(META_HEADER, bundle.header);
+		for (const item of decoded) {
+			await this.repo.putFolders([item.folder]);
+			await this.repo.putRecords(item.records);
+		}
 		await this.lock();
 	}
 
@@ -481,6 +788,7 @@ class VaultState {
 		await this.client.call('lock', {});
 		this.#clearSession();
 		await this.repo.clear();
+		this.localUnlockKind = null;
 		this.cards = [];
 		this.folders = [];
 		this.disconnectDrive();
@@ -488,11 +796,43 @@ class VaultState {
 		this.status = 'connect';
 	}
 
-	async #uploadEnvelope(envelope: VaultEnvelope): Promise<void> {
+	async #uploadHeader(header: VaultHeader): Promise<void> {
 		if (!this.#driveToken) return;
-		const fileId = await this.repo.getMeta<string>(META_DRIVE_FILE_ID);
-		if (fileId) await updateFile(this.#driveToken, fileId, envelope);
-		else await this.repo.setMeta(META_DRIVE_FILE_ID, await createVaultFile(this.#driveToken, envelope));
+		const fileId = await this.repo.getMeta<string>(META_DRIVE_HEADER_ID);
+		if (fileId) await updateJsonFile(this.#driveToken, fileId, header);
+		else {
+			await this.repo.setMeta(
+				META_DRIVE_HEADER_ID,
+				await createJsonFile(this.#driveToken, HEADER_FILE_NAME, header)
+			);
+		}
+	}
+
+	async #uploadFolder(folderId: string): Promise<void> {
+		if (!this.#driveToken) return;
+		let folder = await this.repo.getFolder(folderId);
+		if (!folder) return;
+		if (!folder.enc_name) {
+			folder = (await this.client.call('encryptFolders', { folders: [folder] })).folders[0];
+			await this.repo.putFolders([folder]);
+		}
+		const bytes = encodeFolderFile(folder, await this.repo.recordsForFolder(folderId));
+		const ids = (await this.repo.getMeta<Record<string, string>>(META_DRIVE_FOLDER_IDS)) ?? {};
+		if (ids[folderId]) await updateBinaryFile(this.#driveToken, ids[folderId], bytes);
+		else {
+			ids[folderId] = await createBinaryFile(
+				this.#driveToken,
+				folderFileName(folderId),
+				bytes
+			);
+			await this.repo.setMeta(META_DRIVE_FOLDER_IDS, ids);
+		}
+	}
+
+	async #decryptCachedFolderNames(): Promise<void> {
+		const encrypted = (await this.repo.allFolders()).filter((folder) => folder.enc_name);
+		if (!encrypted.length) return;
+		await this.repo.putFolders((await this.client.call('decryptFolders', { folders: encrypted })).folders);
 	}
 
 	async #connectDrive(prompt: '' | 'none' = ''): Promise<string> {
@@ -547,34 +887,44 @@ class VaultState {
 		await this.#trySilentConnect();
 		if (this.driveConnected) await this.syncNow();
 	}
-
-	/**
-	 * Rebuild the encrypted envelope from local data and cache it (PLAN.md §6.2).
-	 * This keeps the local envelope current; Drive upload happens on sync.
-	 */
-	private async persist(): Promise<void> {
-		const [records, folders, envelope] = await Promise.all([
-			this.repo.allRecords(),
-			this.repo.allFolders(),
-			this.repo.getMeta<VaultEnvelope>(META_ENVELOPE)
-		]);
-		if (!envelope) return;
-		const { blob } = await this.client.call('exportCiphertext', { stored: records, folders });
-		envelope.ciphertext = blob;
-		envelope.updated = Date.now();
-		await this.repo.setMeta(META_ENVELOPE, envelope);
-
-		// Push the change to Drive if connected (lightweight upload, no pull).
-		if (this.driveConnected) {
-			try {
-				await this.#uploadEnvelope(envelope);
-				this.lastSync = envelope.updated;
-				await this.repo.setMeta(META_LAST_SYNC, envelope.updated);
-			} catch (err) {
-				this.syncError = errorMessage(err);
-			}
-		}
-	}
 }
 
 export const vault = new VaultState();
+
+/** Merge main record state and independently encrypted history by `updated`. */
+function mergeStoredRecords(local: StoredRecord[], remote: StoredRecord[]): StoredRecord[] {
+	const ids = new Set([...local.map((item) => item.id), ...remote.map((item) => item.id)]);
+	const localById = new Map(local.map((item) => [item.id, item]));
+	const remoteById = new Map(remote.map((item) => [item.id, item]));
+	const merged: StoredRecord[] = [];
+	for (const id of ids) {
+		const left = localById.get(id);
+		const right = remoteById.get(id);
+		if (!left) {
+			merged.push(right!);
+			continue;
+		}
+		if (!right) {
+			merged.push(left);
+			continue;
+		}
+		const main = right.updated > left.updated ? right : left;
+		if (main.status === 'deleted') {
+			merged.push({ ...main, enc_history: undefined, historyUpdated: undefined });
+			continue;
+		}
+		const leftHistory = left.historyUpdated ?? -1;
+		const rightHistory = right.historyUpdated ?? -1;
+		const history = rightHistory > leftHistory ? right : left;
+		merged.push({
+			...main,
+			enc_history: history.enc_history,
+			historyUpdated: history.historyUpdated
+		});
+	}
+	return merged;
+}
+
+function sameBytes(left: Bytes, right: Bytes): boolean {
+	return left.length === right.length && left.every((byte, index) => byte === right[index]);
+}

@@ -1,13 +1,22 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 
-import { createVaultFile, downloadJson, findVaultFile, updateFile } from './client.ts';
+import {
+	createBinaryFile,
+	downloadBytes,
+	downloadJson,
+	findHeaderFile,
+	folderFileName,
+	folderIdFromFileName,
+	listVaultFiles,
+	updateBinaryFile
+} from './client.ts';
 
 interface Captured {
 	url: string;
 	method: string;
 	auth: string | null;
 	contentType: string | null;
-	body: string | null;
+	body: BodyInit | null;
 }
 
 let captured: Captured[];
@@ -21,11 +30,14 @@ function mock(response: unknown, status = 200) {
 			method: init?.method ?? 'GET',
 			auth: headers.get('Authorization'),
 			contentType: headers.get('Content-Type'),
-			body: (init?.body as string) ?? null
+			body: init?.body ?? null
 		});
-		return new Response(typeof response === 'string' ? response : JSON.stringify(response), {
-			status
-		});
+		const body = response instanceof Uint8Array
+			? response
+			: typeof response === 'string'
+				? response
+				: JSON.stringify(response);
+		return new Response(body, { status });
 	}) as typeof fetch;
 }
 
@@ -37,49 +49,55 @@ afterEach(() => {
 	globalThis.fetch = originalFetch;
 });
 
-describe('drive client', () => {
-	test('findVaultFile queries the appDataFolder with auth', async () => {
-		mock({ files: [{ id: 'file1', name: 'vault.json' }] });
-		const file = await findVaultFile('tok');
-		expect(file?.id).toBe('file1');
+describe('v2 drive client', () => {
+	test('lists header and folder files with server versions', async () => {
+		mock({ files: [{ id: 'header', name: 'simple-vault.header.json', version: '7' }] });
+		const files = await listVaultFiles('tok');
+		expect(files[0].version).toBe('7');
 		expect(captured[0].url).toContain('spaces=appDataFolder');
-		expect(captured[0].url).toContain("name%3D'vault.json'"); // encoded q
+		expect(captured[0].url).toContain('version');
 		expect(captured[0].auth).toBe('Bearer tok');
 	});
 
-	test('findVaultFile returns null when absent', async () => {
-		mock({ files: [] });
-		expect(await findVaultFile('tok')).toBeNull();
+	test('findHeaderFile returns the v2 header only', async () => {
+		mock({ files: [{ id: 'folder', name: folderFileName('jtfano2b') }] });
+		expect(await findHeaderFile('tok')).toBeNull();
 	});
 
-	test('downloadJson requests media and parses JSON', async () => {
-		mock({ version: 1, updated: 7 });
-		const env = await downloadJson<{ version: number }>('tok', 'file1');
-		expect(env.version).toBe(1);
-		expect(captured[0].url).toContain('/files/file1?alt=media');
+	test('round-trips folder filenames', () => {
+		expect(folderIdFromFileName(folderFileName('jtfano2b'))).toBe('jtfano2b');
+		expect(folderIdFromFileName('other.bin')).toBeNull();
 	});
 
-	test('createVaultFile posts a multipart upload into appDataFolder', async () => {
+	test('downloads JSON and raw bytes', async () => {
+		mock({ format: 2 });
+		expect((await downloadJson<{ format: number }>('tok', 'header')).format).toBe(2);
+		mock(new Uint8Array([1, 2, 3]));
+		expect(await downloadBytes('tok', 'folder')).toEqual(new Uint8Array([1, 2, 3]));
+	});
+
+	test('creates a binary multipart file in appDataFolder', async () => {
 		mock({ id: 'newid' });
-		const id = await createVaultFile('tok', { ciphertext: 'x' });
-		expect(id).toBe('newid');
+		expect(await createBinaryFile('tok', folderFileName('jtfano2b'), new Uint8Array([1, 2]))).toBe(
+			'newid'
+		);
 		expect(captured[0].method).toBe('POST');
-		expect(captured[0].url).toContain('uploadType=multipart');
 		expect(captured[0].contentType).toContain('multipart/related');
-		expect(captured[0].body).toContain('appDataFolder');
-		expect(captured[0].body).toContain('vault.json');
+		const text = await (captured[0].body as Blob).text();
+		expect(text).toContain('appDataFolder');
+		expect(text).toContain(folderFileName('jtfano2b'));
 	});
 
-	test('updateFile patches the media content', async () => {
+	test('patches binary folder content without JSON/Base64', async () => {
 		mock({});
-		await updateFile('tok', 'file1', { ciphertext: 'y' });
+		await updateBinaryFile('tok', 'folder', new Uint8Array([1, 2, 3]));
 		expect(captured[0].method).toBe('PATCH');
-		expect(captured[0].url).toContain('/files/file1?uploadType=media');
-		expect(captured[0].body).toContain('"ciphertext":"y"');
+		expect(captured[0].contentType).toBe('application/cbor');
+		expect(captured[0].body).toEqual(new Uint8Array([1, 2, 3]));
 	});
 
 	test('throws on a non-ok response', async () => {
 		mock('nope', 403);
-		await expect(findVaultFile('tok')).rejects.toThrow('403');
+		await expect(findHeaderFile('tok')).rejects.toThrow('403');
 	});
 });

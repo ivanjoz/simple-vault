@@ -1,5 +1,5 @@
 // Public surface of the crypto core.
-export type { Bytes, EncBlob, KdfParams, VaultEnvelope } from './types.ts';
+export type { Bytes, EncBlob, KdfParams, VaultHeader } from './types.ts';
 export type { CreatedVault, CreateVaultOptions, UnlockMethod } from './envelope.ts';
 
 export { utf8ToBytes, bytesToUtf8, bytesToBase64, base64ToBytes } from './encoding.ts';

@@ -1,52 +1,57 @@
-// The vault data model (PLAN.md §4).
-//
-// Two representations exist for a record:
-//  - PlainRecord  — full plaintext; this is what lives inside the single
-//                   Drive `ciphertext` blob and what we work with in memory
-//                   transiently.
-//  - StoredRecord — the IndexedDB form: metadata stays plaintext for indexing
-//                   and delta sync, while sensitive fields are per-record
-//                   encrypted.
+// Application and local IndexedDB models for the v2 per-folder format.
 
 import type { EncBlob } from '$lib/crypto';
 
 export type RecordStatus = 'active' | 'deleted';
 
-/** One previous password. Kept minimal: `p` = password, `u` = unix-ms. */
+/** One previous password and the Unix-second update that replaced it. */
 export interface HistoryItem {
 	p: string;
 	u: number;
 }
 
-/** Fields shown on cards (decrypted for display). */
+/** Stable positional plaintext encrypted as the main record component. */
+export type RecordData = [
+	title: string,
+	username: string,
+	password: string,
+	siteUrl: string,
+	notes: string
+];
+
+/** Fields shown on cards. The worker returns only these after decrypting RecordData. */
 export interface MetaPlain {
 	title: string;
 	username: string;
 }
 
-/** Sensitive fields (decrypted only on demand, ≤ 40 s). */
+/** Sensitive fields returned only for an explicit record action. */
 export interface SecretPlain {
 	password: string;
+	url: string;
 	notes: string;
-	history: HistoryItem[];
 }
 
-/** Full plaintext record — the Drive/working form. */
+/** Transient full value accepted by the crypto worker for an edit/rekey. */
 export interface PlainRecord extends MetaPlain, SecretPlain {
 	id: string;
 	folderId: string;
 	updated: number;
 	status: RecordStatus;
+	history: HistoryItem[];
+	/** Independent history timestamp; absent until history exists. */
+	historyUpdated?: number;
 }
 
-/** IndexedDB form — sensitive fields encrypted, metadata plaintext. */
+/** IndexedDB and decoded-folder representation. Ciphertexts remain independent. */
 export interface StoredRecord {
 	id: string;
 	folderId: string;
 	updated: number;
 	status: RecordStatus;
-	enc_meta: EncBlob;
-	enc_secret: EncBlob;
+	enc_data: EncBlob;
+	enc_history?: EncBlob;
+	historyUpdated?: number;
 }
 
 export interface Folder {
@@ -54,6 +59,8 @@ export interface Folder {
 	name: string;
 	updated: number;
 	status: RecordStatus;
+	/** Cached encrypted name used when rebuilding the Drive folder file. */
+	enc_name?: EncBlob;
 }
 
 /** Decrypted metadata for rendering a card (no secret material). */
@@ -64,11 +71,3 @@ export interface CardView {
 	title: string;
 	username: string;
 }
-
-/** The decrypted contents of the Drive envelope's ciphertext. */
-export interface VaultData {
-	records: PlainRecord[];
-	folders: Folder[];
-}
-
-export const EMPTY_VAULT_DATA: VaultData = { records: [], folders: [] };

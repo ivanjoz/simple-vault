@@ -5,10 +5,14 @@ import type { Folder, StoredRecord } from '$lib/vault/types';
 import { VaultDB } from './database.ts';
 
 /** Well-known keys in the `meta` table. */
-export const META_ENVELOPE = 'envelope';
-export const META_DRIVE_FILE_ID = 'driveFileId';
+export const META_HEADER = 'header';
+export const META_DRIVE_HEADER_ID = 'driveHeaderId';
+export const META_DRIVE_FOLDER_IDS = 'driveFolderIds';
+export const META_DRIVE_FOLDER_VERSIONS = 'driveFolderVersions';
 export const META_LAST_SYNC = 'lastSync';
 export const META_SETTINGS = 'settings';
+/** Device-local biometric/PIN unlocker (never synced to Drive). */
+export const META_LOCAL_UNLOCK = 'localUnlock';
 
 export class VaultRepository {
 	constructor(private readonly db: VaultDB = new VaultDB()) {}
@@ -42,6 +46,10 @@ export class VaultRepository {
 		return this.db.records.where('status').equals('active').toArray();
 	}
 
+	async recordsForFolder(folderId: string): Promise<StoredRecord[]> {
+		return this.db.records.where('folderId').equals(folderId).toArray();
+	}
+
 	// --- Folders -------------------------------------------------------------
 
 	async putFolders(folders: Folder[]): Promise<void> {
@@ -56,6 +64,10 @@ export class VaultRepository {
 		return this.db.folders.where('status').equals('active').toArray();
 	}
 
+	async getFolder(id: string): Promise<Folder | undefined> {
+		return this.db.folders.get(id);
+	}
+
 	// --- Meta ----------------------------------------------------------------
 
 	async getMeta<T>(key: string): Promise<T | undefined> {
@@ -65,6 +77,10 @@ export class VaultRepository {
 
 	async setMeta(key: string, value: unknown): Promise<void> {
 		await this.db.meta.put({ key, value });
+	}
+
+	async deleteMeta(key: string): Promise<void> {
+		await this.db.meta.delete(key);
 	}
 
 	// --- Lifecycle -----------------------------------------------------------

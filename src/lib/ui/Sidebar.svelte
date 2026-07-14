@@ -43,7 +43,10 @@
 			type="button"
 			aria-label="Settings"
 			title="Settings"
-			onclick={() => (vault.settingsOpen = true)}
+			onclick={() => {
+				vault.settingsOpen = true;
+				onclose?.();
+			}}
 			class="flex h-32 w-32 items-center justify-center rounded-lg text-muted transition-colors hover:bg-surface-2 hover:text-text"
 		>
 			<span class="icon-[lucide--settings] text-[20px]"></span>

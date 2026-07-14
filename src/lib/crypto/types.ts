@@ -26,24 +26,21 @@ export interface KdfParams {
 }
 
 /**
- * The single encrypted file stored in Google Drive (and mirrored conceptually
- * in IndexedDB). See PLAN.md §3.3.
+ * The small key header stored separately from folder payload files.
  */
-export interface VaultEnvelope {
-	version: number;
+export interface VaultHeader {
+	format: 2;
 	kdf: KdfParams;
 	/** base64 salt for the master-password KEK. */
 	saltPassword: string;
 	/** base64 salt for the recovery-key KEK. */
 	saltRecovery: string;
-	/** All vault records (JSON array) encrypted with the DEK. */
-	ciphertext: EncBlob;
 	/** DEK wrapped by the master-password KEK. */
 	wrappedDEK_password: EncBlob;
 	/** DEK wrapped by the recovery-key KEK. */
 	wrappedDEK_recovery: EncBlob;
 	/** The recovery key itself, encrypted with the DEK (convenience copy, PLAN.md §3.4). */
 	enc_recoveryKey: EncBlob;
-	/** Envelope-level timestamp (unix ms) for coarse conflict detection. */
+	/** Header timestamp in whole Unix seconds. */
 	updated: number;
 }

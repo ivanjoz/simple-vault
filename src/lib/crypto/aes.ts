@@ -14,15 +14,19 @@ export function importAesKey(raw: Bytes, extractable = false): Promise<CryptoKey
 	]);
 }
 
-export async function aesEncrypt(key: CryptoKey, plaintext: Bytes): Promise<EncBlob> {
+export async function aesEncrypt(key: CryptoKey, plaintext: Bytes, aad?: Bytes): Promise<EncBlob> {
 	const iv = randomBytes(IV_BYTES);
-	const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext);
+	const algorithm: AesGcmParams = { name: 'AES-GCM', iv };
+	if (aad) algorithm.additionalData = aad;
+	const ct = await crypto.subtle.encrypt(algorithm, key, plaintext);
 	return { iv: bytesToBase64(iv), data: bytesToBase64(new Uint8Array(ct)) };
 }
 
 /** Decrypt an {@link EncBlob}. Throws if authentication fails (wrong key / tampering). */
-export async function aesDecrypt(key: CryptoKey, blob: EncBlob): Promise<Bytes> {
+export async function aesDecrypt(key: CryptoKey, blob: EncBlob, aad?: Bytes): Promise<Bytes> {
 	const iv = base64ToBytes(blob.iv);
-	const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, base64ToBytes(blob.data));
+	const algorithm: AesGcmParams = { name: 'AES-GCM', iv };
+	if (aad) algorithm.additionalData = aad;
+	const pt = await crypto.subtle.decrypt(algorithm, key, base64ToBytes(blob.data));
 	return new Uint8Array(pt);
 }

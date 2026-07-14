@@ -1,7 +1,6 @@
 // Dexie (IndexedDB) schema (PLAN.md §4.4). Records are stored with plaintext
-// metadata (id / folderId / updated / status) for indexing and delta sync, and
-// per-record encrypted `enc_meta` / `enc_secret`. No key material or plaintext
-// secret is ever written here.
+// metadata (id / folderId / updated / status) for indexing and merge, with
+// independent encrypted record and history components.
 
 import Dexie, { type DexieOptions, type Table } from 'dexie';
 import type { Folder, StoredRecord } from '$lib/vault/types';
@@ -26,5 +25,19 @@ export class VaultDB extends Dexie {
 			folders: 'id, updated, status',
 			meta: 'key'
 		});
+		// v2 is intentionally incompatible with the pre-alpha monolithic format.
+		this.version(2)
+			.stores({
+				records: 'id, folderId, updated, status',
+				folders: 'id, updated, status',
+				meta: 'key'
+			})
+			.upgrade(async (tx) => {
+				await Promise.all([
+					tx.table('records').clear(),
+					tx.table('folders').clear(),
+					tx.table('meta').clear()
+				]);
+			});
 	}
 }

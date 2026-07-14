@@ -1,7 +1,8 @@
 <script lang="ts">
-	import { vault } from '$lib/app/vault.svelte';
+	import { vault, AUTOLOCK_OPTIONS } from '$lib/app/vault.svelte';
 	import Button from './Button.svelte';
 	import TextField from './TextField.svelte';
+	import PinPad from './PinPad.svelte';
 
 	let { onclose }: { onclose: () => void } = $props();
 
@@ -9,6 +10,13 @@
 	let confirm = $state('');
 	let passwordNote = $state('');
 	let fileInput = $state<HTMLInputElement | null>(null);
+
+	// App-lock (biometrics / PIN) enrolment state.
+	let showPinSetup = $state(false);
+	let pinStep = $state<'enter' | 'confirm'>('enter');
+	let firstPin = $state('');
+	let pinValue = $state('');
+	let appLockNote = $state('');
 
 	const canChange = $derived(newPassword.length >= 8 && newPassword === confirm && !vault.busy);
 
@@ -19,14 +27,64 @@
 			newPassword = '';
 			confirm = '';
 			passwordNote = 'Master password changed and vault re-encrypted.';
+			appLockNote = vault.localUnlockKind ? '' : 'App lock was reset — re-enable it below.';
 		}
+	}
+
+	async function enableBiometric() {
+		appLockNote = '';
+		const ok = await vault.enrollBiometric();
+		if (ok) appLockNote = 'Device unlock enabled.';
+	}
+
+	function startPinSetup() {
+		showPinSetup = true;
+		pinStep = 'enter';
+		firstPin = '';
+		pinValue = '';
+		appLockNote = '';
+		vault.error = null;
+	}
+
+	function cancelPinSetup() {
+		showPinSetup = false;
+		firstPin = '';
+		pinValue = '';
+	}
+
+	async function pinStepSubmit() {
+		if (pinStep === 'enter') {
+			firstPin = pinValue;
+			pinValue = '';
+			pinStep = 'confirm';
+			return;
+		}
+		if (pinValue !== firstPin) {
+			vault.error = 'PINs did not match. Start again.';
+			firstPin = '';
+			pinValue = '';
+			pinStep = 'enter';
+			return;
+		}
+		const ok = await vault.enrollPin(pinValue);
+		if (ok) {
+			showPinSetup = false;
+			firstPin = '';
+			pinValue = '';
+			appLockNote = 'PIN unlock enabled.';
+		}
+	}
+
+	async function disableAppLock() {
+		await vault.disableLocalUnlock();
+		appLockNote = 'App lock disabled.';
 	}
 
 	async function importFile(e: Event) {
 		const input = e.target as HTMLInputElement;
 		const file = input.files?.[0];
 		if (!file) return;
-		await vault.importVault(await file.text());
+		await vault.importVault(new Uint8Array(await file.arrayBuffer()));
 		onclose();
 	}
 </script>
@@ -72,6 +130,87 @@
 			</label>
 		</section>
 
+		<!-- App lock (device unlock / app PIN) -->
+		<section class="mt-24 border-t border-border pt-20">
+			<h3 class="text-sm font-medium">App lock</h3>
+			<p class="mt-4 text-xs text-muted">
+				{#if vault.platformAuthAvailable}
+					Unlock with your phone's own lock — fingerprint, face, pattern, or PIN — instead of your
+					master password. Your phone verifies you; the vault key stays on this device only and is
+					never synced to Drive.
+				{:else}
+					This device has no built-in authenticator, so you can set a separate app PIN (chosen here,
+					not your phone's lock) for a quick unlock. It stays on this device only.
+				{/if}
+			</p>
+
+			{#if vault.localUnlockKind}
+				<p class="mt-12 text-sm text-success">
+					Enabled: {vault.localUnlockKind === 'webauthn'
+						? 'Device unlock (your phone lock)'
+						: 'App PIN'}
+				</p>
+				<div class="mt-12">
+					<Button variant="ghost" onclick={disableAppLock}>Disable app lock</Button>
+				</div>
+			{:else if showPinSetup}
+				<div class="mt-16 flex flex-col items-center gap-12">
+					<p class="text-xs text-muted">
+						{pinStep === 'enter'
+							? 'Choose an app PIN (4–8 digits) you will remember.'
+							: 'Re-enter the PIN to confirm.'}
+					</p>
+					<PinPad bind:value={pinValue} onsubmit={pinStepSubmit} disabled={vault.busy} />
+					<button
+						type="button"
+						class="text-xs text-muted transition-colors hover:text-text"
+						onclick={cancelPinSetup}
+					>
+						Cancel
+					</button>
+				</div>
+			{:else}
+				<div class="mt-12 flex flex-wrap gap-8">
+					{#if vault.platformAuthAvailable}
+						<Button onclick={enableBiometric} disabled={vault.busy}>Enable device unlock</Button>
+						<Button variant="ghost" onclick={startPinSetup}>Use an app PIN instead</Button>
+					{:else}
+						<Button onclick={startPinSetup}>Set up an app PIN</Button>
+					{/if}
+				</div>
+				<p class="mt-8 text-xs text-muted">
+					An app PIN is a separate secret you choose here (not your phone's lock). It's weaker than
+					your master password — it can be guessed offline if this device is compromised — so keep
+					it only for convenience; your master password always works.
+				</p>
+			{/if}
+			{#if appLockNote}<p class="mt-8 text-xs text-success">{appLockNote}</p>{/if}
+		</section>
+
+		<!-- Auto-lock -->
+		<section class="mt-24 border-t border-border pt-20">
+			<h3 class="text-sm font-medium">Auto-lock</h3>
+			<p class="mt-4 text-xs text-muted">
+				Re-lock after the app has been in the background this long. When it re-locks you'll need
+				your {vault.localUnlockKind
+					? vault.localUnlockKind === 'webauthn'
+						? 'phone lock'
+						: 'app PIN'
+					: 'master password'} to get back in.
+			</p>
+			<label class="mt-12 flex items-center gap-8 text-sm">
+				<select
+					class="rounded-lg border border-border bg-surface-2 px-12 py-8 text-sm text-text outline-none focus:border-accent"
+					value={String(vault.autoLockMs)}
+					onchange={(e) => vault.setAutoLockMs(Number((e.target as HTMLSelectElement).value))}
+				>
+					{#each AUTOLOCK_OPTIONS as opt (opt.ms)}
+						<option value={String(opt.ms)}>{opt.label}</option>
+					{/each}
+				</select>
+			</label>
+		</section>
+
 		<!-- Change master password -->
 		<section class="mt-24 border-t border-border pt-20">
 			<h3 class="text-sm font-medium">Change master password</h3>
@@ -107,7 +246,7 @@
 				<input
 					bind:this={fileInput}
 					type="file"
-					accept="application/json,.json"
+					accept="application/cbor,.svault"
 					class="hidden"
 					onchange={importFile}
 				/>

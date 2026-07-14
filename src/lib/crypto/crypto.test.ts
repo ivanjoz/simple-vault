@@ -53,6 +53,14 @@ describe('aes-gcm', () => {
 		expect(bytesToUtf8(await aesDecrypt(key, blob))).toBe('secret');
 	});
 
+	test('authenticates additional data', async () => {
+		const key = await importAesKey(randomBytes(32));
+		const aad = utf8ToBytes('record:a:1');
+		const blob = await aesEncrypt(key, utf8ToBytes('secret'), aad);
+		expect(bytesToUtf8(await aesDecrypt(key, blob, aad))).toBe('secret');
+		await expect(aesDecrypt(key, blob, utf8ToBytes('record:b:1'))).rejects.toThrow();
+	});
+
 	test('fails to decrypt with the wrong key', async () => {
 		const key = await importAesKey(randomBytes(32));
 		const wrong = await importAesKey(randomBytes(32));
@@ -85,42 +93,41 @@ describe('dek wrap/unwrap', () => {
 	});
 });
 
-describe('vault envelope', () => {
-	test('unlocks with the master password and reads empty records', async () => {
-		const { envelope } = await createVault('correct horse', { now: 1000, kdf: FAST_KDF });
-		const dek = await unlockWithPassword(envelope, 'correct horse');
-		expect(await decryptJson(dek, envelope.ciphertext)).toEqual([]);
+describe('vault header', () => {
+	test('unlocks with the master password', async () => {
+		const { header } = await createVault('correct horse', { now: 1000, kdf: FAST_KDF });
+		expect(header.format).toBe(2);
+		await expect(unlockWithPassword(header, 'correct horse')).resolves.toBeDefined();
 	});
 
 	test('rejects the wrong master password', async () => {
-		const { envelope } = await createVault('correct horse', { now: 1000, kdf: FAST_KDF });
-		await expect(unlockWithPassword(envelope, 'wrong')).rejects.toThrow();
+		const { header } = await createVault('correct horse', { now: 1000, kdf: FAST_KDF });
+		await expect(unlockWithPassword(header, 'wrong')).rejects.toThrow();
 	});
 
 	test('unlocks with the recovery key (any casing/spacing)', async () => {
-		const { envelope, recoveryKey } = await createVault('pw', { now: 1000, kdf: FAST_KDF });
+		const { header, recoveryKey } = await createVault('pw', { now: 1000, kdf: FAST_KDF });
 		const messy = recoveryKey.toLowerCase().replace(/-/g, ' ');
-		const dek = await unlockWithRecovery(envelope, messy);
-		expect(await decryptJson(dek, envelope.ciphertext)).toEqual([]);
+		await expect(unlockWithRecovery(header, messy)).resolves.toBeDefined();
 	});
 
 	test('the DEK from password and recovery unlock are interchangeable', async () => {
-		const { envelope, recoveryKey } = await createVault('pw', { now: 1000, kdf: FAST_KDF });
-		const dekPw = await unlockWithPassword(envelope, 'pw');
-		const dekRec = await unlockWithRecovery(envelope, recoveryKey);
+		const { header, recoveryKey } = await createVault('pw', { now: 1000, kdf: FAST_KDF });
+		const dekPw = await unlockWithPassword(header, 'pw');
+		const dekRec = await unlockWithRecovery(header, recoveryKey);
 		const blob = await encryptJson(dekPw, { hello: 'world' });
 		expect(await decryptJson(dekRec, blob)).toEqual({ hello: 'world' });
 	});
 
 	test('stores a decryptable convenience copy of the recovery key', async () => {
-		const { envelope, recoveryKey } = await createVault('pw', { now: 1000, kdf: FAST_KDF });
-		const dek = await unlockWithPassword(envelope, 'pw');
-		expect(await decryptRecoveryKey(envelope, dek)).toBe(recoveryKey);
+		const { header, recoveryKey } = await createVault('pw', { now: 1000, kdf: FAST_KDF });
+		const dek = await unlockWithPassword(header, 'pw');
+		expect(await decryptRecoveryKey(header, dek)).toBe(recoveryKey);
 	});
 
 	test('record field JSON round-trips through the DEK', async () => {
-		const { envelope } = await createVault('pw', { now: 1000, kdf: FAST_KDF });
-		const dek = await unlockWithPassword(envelope, 'pw');
+		const { header } = await createVault('pw', { now: 1000, kdf: FAST_KDF });
+		const dek = await unlockWithPassword(header, 'pw');
 		const secret = { password: 'hunter2', notes: 'n', history: [{ p: 'old', u: 5 }] };
 		expect(await decryptJson(dek, await encryptJson(dek, secret))).toEqual(secret);
 	});

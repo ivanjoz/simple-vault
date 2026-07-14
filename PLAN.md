@@ -1,353 +1,267 @@
-# Simple Vault — Implementation Plan
+# Simple Vault v2 plan
 
-A fully client-side ("backendless") password manager. All cryptography happens in
-the browser. Google Drive is used only as a dumb store for a single encrypted
-envelope file. Dexie/IndexedDB is the local cache for offline use and fast
-rendering. **No server ever sees plaintext, keys, or the master password.**
+This document describes the intentionally incompatible pre-alpha v2 storage
+format. There is no migration path from the old single `vault.json` ciphertext.
+Old local databases and old Drive files may be discarded.
 
-The UX takes inspiration from Bitwarden but is deliberately simpler.
+## 1. Goals
 
----
+- Keep all cryptography in the browser and keep Google Drive as an opaque store.
+- Store one small vault header plus one data file per logical folder.
+- Encrypt records independently so editing one record never re-encrypts unrelated
+  records.
+- Keep password history in its own ciphertext and decrypt it only when requested.
+- Keep card metadata available independently from secrets in application memory.
+- Use compact positional data and a binary Drive format; never Base64-encode folder
+  payloads.
+- Use `updated`, not `version`, for conflict comparison. `updated` is Unix time in
+  whole seconds.
+- Accept breaking changes while the project is pre-alpha.
 
-## 1. Goals & Non-Goals
+## 2. Identifiers and timestamps
 
-### Goals
-- Backendless: no application server; only static hosting.
-- End-to-end encryption in the browser using the WebCrypto API.
-- Google Drive as encrypted-blob storage (per-user, in a hidden app folder).
-- Local-first: fully usable offline via IndexedDB; Drive is the backup/sync target.
-- Dual unlock: master password **or** a downloadable recovery key.
-- Simple entry schema: folder, title, username, password, notes + password history.
-- Responsive card-based UI with one-click password copy.
-- Strict memory hygiene for secrets.
+### 2.1 Record and folder IDs
 
-### Non-Goals (initial version)
-- No multi-device real-time collaboration (sync is last-write-wins per record).
-- No sharing/organizations.
-- No browser-extension autofill.
-- No mobile native app (responsive web only).
+New IDs use the last eight Base32 characters of the current millisecond timestamp:
 
----
+```ts
+Date.now().toString(32).slice(-8)
+```
 
-## 2. Tech Stack
+The binary format decodes the eight Base32 digits into an unsigned 40-bit value
+and stores it in five bytes. The application-facing representation remains the
+eight-character Base32 string.
 
-| Concern            | Choice                                                        |
-|--------------------|---------------------------------------------------------------|
-| Framework          | SvelteKit 2 + Svelte 5 (runes)                                |
-| Runtime / PM       | Bun 1.3.x                                                      |
-| Styling            | Tailwind CSS                                                  |
-| Language           | TypeScript (TS 7 native `tsgo` preview for CLI typecheck)     |
-| Adapter            | `@sveltejs/adapter-static` (pure SPA, no backend)             |
-| Local DB           | Dexie (IndexedDB)                                             |
-| KDF                | Argon2id via `hash-wasm`                                      |
-| Symmetric crypto   | WebCrypto `SubtleCrypto` — AES-GCM-256                        |
-| Cloud storage      | Google Drive API v3, scope `drive.appdata`                    |
-| Auth               | Google Identity Services (GIS) token client, OAuth2 + PKCE    |
-| Key holding        | Dedicated Web Worker (in-memory, non-extractable `CryptoKey`) |
-| Tests              | `bun test`                                                    |
+### 2.2 `updated`
 
-### Prerequisite (user-provided, later)
-A Google Cloud **OAuth Client ID** (Web application) with the Drive API enabled.
-Development proceeds with a placeholder env var `PUBLIC_GOOGLE_CLIENT_ID`; console
-setup steps will be documented.
+Every independently mergeable value has an `updated` timestamp:
 
----
+```ts
+Math.floor(Date.now() / 1000)
+```
 
-## 3. Cryptographic Design (Envelope Encryption)
+JSON/debug output may render it with `updated.toString(32)`. Binary files store it
+as an unsigned 32-bit integer. The design deliberately treats one second as the
+smallest observable update interval.
 
-Rather than storing two full ciphertext copies, the vault uses **envelope
-encryption**: the bulk data is encrypted once with a random Data Encryption Key
-(DEK), and the DEK itself is wrapped (encrypted) multiple times so it can be
-unlocked by different secrets.
+## 3. Cryptographic hierarchy
 
-### 3.1 Keys
-- **DEK** — random 256-bit AES-GCM key. Encrypts all vault records. Imported as a
-  **non-extractable** `CryptoKey` for the session.
-- **Master password** — user-chosen. Never stored. Feeds Argon2id → **master-KEK**.
-- **Recovery key** — random high-entropy string generated at vault creation, shown
-  once and downloaded by the user. Feeds a KDF → **recovery-KEK**.
+- A random 256-bit AES-GCM Data Encryption Key (DEK) encrypts folder metadata,
+  record data, and record history.
+- The master password is processed by Argon2id to derive a password KEK.
+- The recovery key is processed by Argon2id to derive a recovery KEK.
+- The header stores the DEK wrapped once by each KEK.
+- The header also stores the recovery key encrypted by the DEK as a convenience
+  copy; it is not usable until the DEK has already been unlocked.
+- Each encrypted component receives a fresh random 12-byte AES-GCM IV and a
+  16-byte authentication tag.
+- IDs, `updated`, component kind, and folder identity are supplied as AES-GCM
+  additional authenticated data (AAD), so ciphertext cannot be moved between
+  records or component kinds without authentication failure.
 
-### 3.2 Argon2id parameters (tunable)
-- memory: 64 MiB, iterations: 3, parallelism: 1, output: 32 bytes.
-- Unique random salt per KEK, stored in the envelope.
+Argon2id runs only during vault unlock or key-management operations. It never runs
+per record.
 
-### 3.3 The Drive envelope (single JSON file in `appDataFolder`)
-```jsonc
-{
-  "version": 1,
-  "kdf": { "algo": "argon2id", "mem": 65536, "iters": 3, "parallelism": 1 },
-  "saltPassword": "<base64>",      // salt for master-KEK
-  "saltRecovery": "<base64>",      // salt for recovery-KEK
-  "iv": "<base64>",                // IV for the records ciphertext
-  "ciphertext": "<base64>",        // AES-GCM(DEK) of the full records array
-  "wrappedDEK_password": "<base64+iv>",  // DEK wrapped by master-KEK
-  "wrappedDEK_recovery": "<base64+iv>",  // DEK wrapped by recovery-KEK
-  "enc_recoveryKey": "<base64+iv>",      // recovery key, AES-GCM(DEK) — convenience copy
-  "updated": 0                     // envelope-level timestamp for coarse conflict detection
+## 4. Google Drive layout
+
+All files live in Drive's hidden `appDataFolder`.
+
+### 4.1 Header file
+
+File name: `simple-vault.header.json`
+
+The header is small and remains JSON:
+
+```ts
+interface VaultHeader {
+  format: 2;
+  kdf: KdfParams;
+  saltPassword: string;
+  saltRecovery: string;
+  wrappedDEK_password: EncBlob;
+  wrappedDEK_recovery: EncBlob;
+  enc_recoveryKey: EncBlob;
+  updated: number; // Unix seconds
 }
 ```
 
-### 3.4 Why `enc_recoveryKey` is stored (and why it's safe)
-It is a **convenience copy**, not the recovery mechanism. It is encrypted with the
-DEK, so it is only readable by someone who can already unlock the vault (via master
-password or recovery key) — i.e. someone who already has full access. It therefore
-adds no meaningful attack surface. Its sole purpose: let the app **re-wrap keys
-during a master-password change** without prompting the user to paste or re-download
-their recovery key.
+The header contains no records, folders, or monolithic vault ciphertext. It changes
+only for key-management operations such as master-password change or recovery-key
+regeneration.
 
-The real recovery flow is unchanged: if the master password is forgotten, the user
-unlocks with their **separately downloaded** recovery key; `enc_recoveryKey` is
-irrelevant in that flow.
+### 4.2 Folder files
 
-### 3.5 Unlock flow
-1. User enters master password (or recovery key).
-2. Derive the corresponding KEK (Argon2id + stored salt).
-3. Unwrap the matching `wrappedDEK_*` → DEK (imported non-extractable into the Worker).
-4. Discard the typed password immediately.
-5. Decrypt records; populate IndexedDB (delta) and the in-memory display store.
+File name: `simple-vault.folder.<folderId>.svf`
 
-### 3.6 Master-password change → full re-encrypt + re-upload (DEK rotation)
-1. Session is unlocked → decrypt `enc_recoveryKey` with the current DEK.
-2. Generate a **new DEK**; re-encrypt **every** record (`enc_meta` + `enc_secret`).
-3. Derive a new master-KEK from the new password (fresh salt).
-4. Wrap the new DEK with (a) the new master-KEK and (b) the existing recovery key.
-5. Re-encrypt `enc_recoveryKey` under the new DEK.
-6. Rebuild the envelope, **re-upload the whole file to Drive**, refresh IndexedDB,
-   swap the in-memory DEK.
-→ No re-download, no paste prompt; the downloaded recovery key keeps working.
+The reserved folder ID `00000000` contains records that the UI calls “No folder”.
+Every other logical folder has exactly one Drive file. Folder names and deletion
+state are encrypted inside their own file; Drive sees only an opaque folder ID,
+file size, and modification metadata.
 
-### 3.7 Regenerate recovery key (explicit user action)
-Generates a fresh recovery key, re-wraps the current DEK with the new recovery-KEK,
-re-encrypts `enc_recoveryKey`, re-uploads, and prompts download. The old recovery
-key stops working.
+Drive content updates still replace the complete affected folder file. Unchanged
+record ciphertext bytes are copied unchanged: only edited components are encrypted.
 
-### 3.8 Recovery-key format
-- Random base32 (Crockford, no ambiguous chars) grouped as **4 groups of 4**
-  digits, e.g. `A3F9-K72M-BQ8X-P4WD` (128 bits of entropy).
-- Case-insensitive on input; hyphens and whitespace stripped before use.
-- Delivered as a downloadable `.txt` file at generation time (shown once).
+## 5. Plain record model
 
----
+Field names are not persisted inside encrypted record payloads. Positional values
+are CBOR-encoded before AES-GCM encryption. The stable formats are:
 
-## 4. Data Model
-
-### 4.1 Record (as stored in IndexedDB and inside the Drive ciphertext array)
 ```ts
-interface VaultRecord {
-  id: string;            // uuid
-  folderId: string;      // plaintext — sidebar filtering / indexing
-  updated: number;       // unix ms — plaintext, drives delta sync
-  status: 'active' | 'deleted';  // tombstone via status (delete propagation)
-  enc_meta: EncBlob;     // AES-GCM(DEK): { title, username }
-  enc_secret: EncBlob;   // AES-GCM(DEK): { password, notes, history }
+type RecordData = [
+  title: string,
+  username: string,
+  password: string,
+  siteUrl: string,
+  notes: string
+];
+
+type HistoryData = Array<[
+  password: string,
+  updated: number
+]>;
+```
+
+Existing positions never change meaning. Future optional fields are appended. A
+folder-file format revision or per-component codec revision supplies defaults for
+missing trailing positions.
+
+History is absent until the first password change. Non-password edits copy the
+history ciphertext without decrypting it. A password change decrypts that record's
+history, appends the previous password, and re-encrypts only the history component.
+
+## 6. CBOR folder format
+
+Folder files use `cbor-x` with record extensions, shared structures, structured
+cloning, and typed-array tags disabled. The schema uses only positional CBOR arrays,
+unsigned integers, and ordinary CBOR byte strings, so every file is self-contained.
+
+```ts
+type FolderFile = [
+  format: 2,
+  folderId: ByteString,          // five-byte Base32 ID
+  folderUpdated: number,
+  folderFlags: number,           // bit 0 = deleted
+  encryptedFolderName: ByteString,
+  records: Array<[
+    id: ByteString,              // five bytes
+    updated: number,
+    flags: number,               // bit 0 = deleted
+    encryptedData: ByteString
+  ]>,
+  histories: Array<[
+    id: ByteString,
+    updated: number,
+    encryptedHistory: ByteString
+  ]>
+];
+```
+
+An encrypted blob is packed without Base64:
+
+```text
+12-byte IV || AES-GCM ciphertext || 16-byte authentication tag
+```
+
+The decoder validates the outer and nested tuple lengths, format, byte-string types,
+five-byte IDs, unsigned timestamp range, flags, encrypted blob minimum sizes,
+duplicate IDs, orphan histories, malformed CBOR, and trailing bytes.
+
+## 7. Local IndexedDB model
+
+IndexedDB remains optimized for UI and merge operations rather than mirroring the
+wire bytes exactly:
+
+```ts
+interface StoredRecord {
+  id: string;
+  folderId: string;
+  updated: number;
+  status: 'active' | 'deleted';
+  enc_data: EncBlob;
+  enc_history?: EncBlob;
 }
-
-interface MetaPlain   { title: string; username: string; }
-interface SecretPlain { password: string; notes: string; history: HistoryItem[]; }
-interface HistoryItem { p: string; u: number; }  // p = old password, u = unix ms
-type EncBlob = { iv: string; data: string };     // both base64
 ```
 
-- `updated` and `status` are **plaintext** so delta sync and filtering never require
-  decryption.
-- `folderId` is plaintext (a non-sensitive reference).
-- Titles/usernames live in `enc_meta`; passwords/notes/history live in `enc_secret`.
+`folderId`, `updated`, and status are intentionally plaintext locally so Dexie can
+index and merge without decrypting every record. They are not repeated inside the
+encrypted `RecordData` tuple. Folder membership is derived from the containing file
+on Drive.
 
-### 4.2 Password history
-Whenever the `password` field changes, the previous value is pushed onto
-`history` as `{ p, u }` (old password + unix-ms timestamp). Minimal footprint,
-encrypted inside `enc_secret`, decrypted only on demand (subject to the 40 s TTL).
+Card loading decrypts `enc_data` inside the key worker and returns only title and
+username. Password, URL, and notes are returned only for an explicit record action.
+History has a separate worker operation and is decrypted only when the history UI
+is opened or when a password change needs to append an item.
 
-### 4.3 Folder
+## 8. Sync
+
+### 8.1 Discovery
+
+1. Locate and download `simple-vault.header.json`.
+2. Unlock the DEK with the master password, recovery key, or device-local unlocker.
+3. List `simple-vault.folder.*.svf` files in `appDataFolder`.
+4. Download changed folder files, decode them, and merge by `(id, updated)`.
+
+Drive's server-side file version may be cached only as a download optimization. It
+is not part of the domain model and is never called the record version.
+
+### 8.2 Merge
+
+- Higher `updated` wins.
+- Equal `updated` is treated as the same logical revision under the deliberate
+  one-second resolution rule.
+- Record deletion is a tombstone and participates in the same comparison.
+- A record tombstone makes any history with the same ID unreachable.
+- Folder deletion remains as an encrypted tombstone file so an offline device does
+  not recreate it.
+
+### 8.3 Push
+
+- Creating or editing a record rebuilds and uploads only its containing folder file.
+- Moving a record rebuilds both the source and destination folder files.
+- Adding, renaming, or deleting a folder rebuilds only that folder file.
+- The header is not uploaded for ordinary record or folder edits.
+- Sync serializes ciphertext already stored in IndexedDB; it does not decrypt and
+  re-encrypt unchanged records.
+
+## 9. Backup and import
+
+The old JSON-envelope export is removed. A v2 backup is a CBOR `.svault` bundle:
+
 ```ts
-interface Folder { id: string; name: string; updated: number; status: 'active' | 'deleted'; }
+[format: 2, header: VaultHeader, folderFiles: ByteString[]]
 ```
 
-### 4.4 Dexie schema
-```ts
-db.version(1).stores({
-  records: 'id, folderId, updated, status',
-  folders: 'id, updated, status',
-  meta:    'key'   // e.g. envelope metadata, last sync time, Drive fileId
-});
-```
-No key material, no plaintext secrets, and no master password are ever written to
-IndexedDB (or localStorage/sessionStorage).
+Import is all-or-nothing, validates the complete bundle first, then replaces local
+data and re-locks. The recovery key remains a separate download and is never
+included in plaintext.
 
----
+## 10. Key-management consequences
 
-## 5. Memory & Session Model
+- Recovery-key regeneration rewraps the current DEK and updates only the header.
+- A master-password change retains the current product policy of rotating the DEK.
+  Consequently it must decrypt and re-encrypt every active encrypted component once,
+  rewrite all local rows, upload every folder file, and update the header.
+- Device-local biometric/PIN wrappers are deleted after DEK rotation and must be
+  enrolled again.
 
-### 5.1 Two distinct secret classes
-- **DEK (master key):** derived once at unlock, held inside a **SharedWorker**
-  (falls back to a dedicated Worker). It stays in worker memory (never in reachable
-  main-thread state). The SharedWorker is shared across same-origin tabs and dies
-  when the last tab closes.
-- **Entry password (per-record secret):** encrypted at rest and in memory. Decrypted
-  **only** on demand (copy click or detail view). Held **≤ 40 seconds**, then the
-  plaintext reference is dropped and the clipboard is cleared.
+## 11. Implementation order
 
-### 5.2 Session lifetime & staying unlocked across reloads
-- Always-on while the tab is open; never expires by timer.
-- **Reload persistence:** a dedicated Worker is destroyed on reload, and a
-  SharedWorker only *sometimes* survives a sole-tab reload (not guaranteed). So the
-  reliable mechanism is an **opt-in `sessionStorage` copy of the DEK** (default on,
-  toggle in settings). It survives reloads and is cleared when the tab closes or on
-  lock. Tradeoff: while enabled, the DEK is readable by same-origin script (XSS)
-  — acceptable given that XSS during an unlocked session can already ask the worker
-  to decrypt anything.
-- **Idle auto-lock:** off by default, optional toggle (planned).
-- Closing all tabs (SharedWorker dies) + no sessionStorage copy → re-unlock with the
-  master password or recovery key.
+1. Add ID/time helpers, tuple codecs, packed encrypted blobs, CBOR folder codec,
+   and unit tests.
+2. Split history from record data in the worker protocol and IndexedDB schema.
+3. Replace `VaultEnvelope` with the ciphertext-free `VaultHeader`.
+4. Replace the Drive client with header/folder listing and binary upload APIs.
+5. Replace monolithic hydrate/persist/sync with per-folder merge and upload.
+6. Replace JSON backup/import with the v2 binary bundle.
+7. Update unit and end-to-end tests, then remove all v1 code.
 
-### 5.3 40-second secret TTL
-- A single utility governs any decrypted entry password: start a 40 s timer on
-  reveal/copy; on expiry drop the reference and clear the clipboard.
-- Card list never holds decrypted passwords; only `enc_meta` (title/username) is
-  decrypted for display.
+## 12. Explicitly accepted constraints
 
-### 5.4 Honest limitations (documented in-app)
-1. **Best-effort wiping.** JS strings are immutable and GC-controlled; exact scrub
-   timing isn't guaranteed. Mitigations: `Uint8Array` for key material with
-   `.fill(0)`, keep the DEK off the main thread, never bind entry passwords to
-   reactive/DOM state, drop references on the 40 s timer.
-2. **Delayed clipboard clear** may be blocked if the tab isn't focused at 40 s —
-   best-effort.
-3. **Reload persistence** requires the opt-in `sessionStorage` DEK copy (§5.2);
-   without it, a reload requires re-unlock. Closing all tabs always requires
-   re-unlock (by design).
-
----
-
-## 6. Synchronization (Delta)
-
-Drive holds one envelope file (whole vault, single ciphertext). IndexedDB holds the
-same records individually encrypted for fast local access.
-
-### 6.1 Pull (Drive → IndexedDB)
-1. Download envelope; unwrap DEK (already in memory during a session).
-2. Decrypt `ciphertext` → full records array (each with `updated`, `status`).
-3. For each record, compare `updated` against the local IndexedDB row:
-   - new or `drive.updated > local.updated` → **upsert** (write the record).
-   - unchanged → **skip** (no re-encrypt, no re-write).
-   - `status:'deleted'` → apply tombstone locally.
-4. Records are stored **individually encrypted** in IndexedDB.
-
-### 6.2 Push (IndexedDB → Drive)
-1. Gather all active + tombstoned records; serialize; encrypt with DEK.
-2. Rebuild the envelope (keep the wrapped-DEK blobs unless keys rotated).
-3. Upload (overwrite) the single Drive file.
-
-### 6.3 Conflict resolution
-- **Per-record, last-write-wins** by `updated` (finer than whole-file LWW).
-- Deletes propagate via `status:'deleted'` tombstones.
-- Envelope-level `updated` used for a coarse "remote changed since last pull" check
-  before merging.
-
-### 6.4 Sync triggers
-- On unlock (initial pull), on mutation (debounced push), and a manual "Sync now".
-- Offline edits queue locally; push on reconnect.
-
----
-
-## 7. Google Drive Integration
-
-- **Auth:** Google Identity Services token client, OAuth2 + PKCE, in-browser.
-- **Scope:** `https://www.googleapis.com/auth/drive.appdata` — a hidden per-app
-  folder invisible in the user's normal Drive listing.
-- **Files:** one envelope file (e.g. `vault.json`) in `appDataFolder`; store its
-  `fileId` in Dexie `meta`.
-- **Tokens:** short-lived access token kept in memory only (no refresh token — a
-  backendless app can't safely hold one). After the first consent, the app requests
-  new tokens **silently** (`prompt: 'none'`) on load, so there's no popup on every
-  visit; it auto-syncs when a silent token is granted.
-- **Consent (Testing mode):** while the OAuth app is in "Testing", each Google
-  account must be added as a **Test user** or sign-in is blocked (403 access_denied).
-- **Config:** `PUBLIC_GOOGLE_CLIENT_ID` env var. Authorized JavaScript origins must
-  include the dev/preview/prod origins; **no redirect URI needed** (token/popup flow).
-
----
-
-## 8. UI / UX
-
-### 8.1 Layout
-- **Left side panel:** folder list + menu info (sync status, lock button, settings,
-  account).
-- **Main area:** a **search filter input** across the top, then a **responsive card
-  grid** — **3 columns desktop / 2 tablet / 1 mobile**.
-
-### 8.2 Card
-- Title, subtitle (username), masked password (`••••••••`), and a **copy icon**.
-- **One-click copy:** decrypts the password on the fly, copies to clipboard, starts
-  the 40 s purge + clipboard-clear timer. Brief "copied" feedback.
-
-### 8.3 Detail / edit
-- Fields: folder, title, username, password (with reveal, subject to 40 s TTL),
-  notes, and a read-only password **history** view.
-- **Password generator** (length + character-class options).
-
-### 8.4 Onboarding & unlock screens
-- **Onboarding:** create vault → set master password → generate + **download
-  recovery key** (shown once).
-- **Unlock:** master password, with a "use recovery key" alternative.
-
-### 8.5 Settings
-- Connect / disconnect Google Drive, "Sync now".
-- Change master password (§3.6), regenerate recovery key (§3.7).
-- Export / import (encrypted).
-- Optional idle auto-lock toggle.
-
----
-
-## 9. Project Structure (proposed)
-```
-src/
-  lib/
-    crypto/         # KDF, DEK gen, wrap/unwrap, AES-GCM, recovery key
-    worker/         # key-holding Web Worker + message protocol
-    db/             # Dexie schema + record repository (per-record encryption)
-    sync/           # delta pull/push, conflict resolution
-    drive/          # GIS auth + Drive API client
-    stores/         # Svelte stores (in-memory display state, session)
-    ui/             # reusable components (Card, Sidebar, SearchBar, ...)
-  routes/
-    +layout.svelte
-    +page.svelte            # vault (cards)
-    onboarding/+page.svelte
-    unlock/+page.svelte
-    settings/+page.svelte
-static/
-tests/
-```
-
----
-
-## 10. Build Phases
-
-1. **Scaffold** — SvelteKit 2 + Svelte 5 + Bun + Tailwind + TS, `adapter-static`,
-   `.env` with placeholder `PUBLIC_GOOGLE_CLIENT_ID`, base layout & routing.
-2. **Crypto core** (`lib/crypto`) — Argon2id KDF, DEK gen, wrap/unwrap ×2, AES-GCM
-   field encrypt/decrypt, recovery-key generation & formatting. `bun test`.
-3. **Key/session Worker** — in-memory non-extractable DEK, message protocol,
-   unlock/lock, 40 s secret-TTL utility, clipboard auto-clear.
-4. **Dexie layer** — schema, per-record encrypt, `updated` maintenance, delta
-   upsert, tombstones.
-5. **Onboarding & unlock** — create vault → master password → download recovery
-   key; unlock via password *or* recovery key.
-6. **Vault UI** — side panel, search, responsive card grid, one-click copy,
-   detail/edit form, password generator, history view.
-7. **Drive sync** — GIS OAuth + PKCE, `appDataFolder`, delta pull / merged push,
-   sync-status indicator.
-8. **Settings & hardening** — change master password (DEK rotation, §3.6),
-   regenerate recovery key, export/import, optional idle-lock, disconnect Drive.
-
-Each phase produces a working, verifiable increment. After phase 5 a local vault can
-be created and unlocked; after phase 7 it syncs to Drive; phase 8 rounds out account
-management.
-
----
-
-## 11. Open Items / Future
-- Encrypted export/import format details.
-- Google verification/consent-screen review for production use of the Drive scope.
-- Optional: WebAuthn/passkey as an additional unlock factor.
+- IDs are timestamp-derived and can collide if two IDs are generated in the same
+  millisecond.
+- `updated` cannot distinguish two meaningful updates to the same component within
+  one second.
+- Drive uploads replace the complete affected folder file; Drive cannot patch one
+  binary record in place.
+- Folder-file separation exposes the number and approximate sizes of folders, while
+  folder names and all record contents remain encrypted.

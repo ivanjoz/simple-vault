@@ -114,7 +114,8 @@ try {
 	let inputs = await page.$$('[role="dialog"] input');
 	await inputs[0].type('GitHub'); // title
 	await inputs[1].type('octocat'); // username
-	const generated = await inputs[2].evaluate((el) => el.value);
+	const passwordInput = await page.$('[role="dialog"] input.font-mono');
+	const generated = await passwordInput.evaluate((el) => el.value);
 	if (!generated) fail('password was not auto-generated');
 	await clickByText(page, 'button', 'Save');
 	await page.waitForFunction(
@@ -156,7 +157,7 @@ try {
 	log('deleted item; vault empty');
 
 	// --- Change master password (DEK rotation) -------------------------------
-	await clickByText(page, 'button', 'Settings');
+	await clickByText(page, 'button[title="Settings"]', '');
 	await hasText(page, 'Change master password');
 	const spw = await page.$$('[role="dialog"] input[type="password"]');
 	await spw[0].type('brand new password');

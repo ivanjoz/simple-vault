@@ -12,6 +12,7 @@ function rec(id: string, updated: number): PlainRecord {
 		title: id,
 		username: '',
 		password: '',
+		url: '',
 		notes: '',
 		history: []
 	};

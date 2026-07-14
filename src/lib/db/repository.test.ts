@@ -15,7 +15,7 @@ function freshRepo(): VaultRepository {
 
 const blob = { iv: 'aa', data: 'bb' };
 function stored(id: string, updated: number, status: 'active' | 'deleted' = 'active'): StoredRecord {
-	return { id, folderId: 'f', updated, status, enc_meta: blob, enc_secret: blob };
+	return { id, folderId: 'f', updated, status, enc_data: blob };
 }
 
 describe('VaultRepository', () => {
@@ -37,6 +37,12 @@ describe('VaultRepository', () => {
 		await repo.putRecords([stored('a', 1), stored('b', 2, 'deleted')]);
 		const active = await repo.activeRecords();
 		expect(active.map((r) => r.id)).toEqual(['a']);
+	});
+
+	test('selects records belonging to one folder', async () => {
+		const repo = freshRepo();
+		await repo.putRecords([stored('a', 1), { ...stored('b', 2), folderId: 'g' }]);
+		expect((await repo.recordsForFolder('f')).map((record) => record.id)).toEqual(['a']);
 	});
 
 	test('bulkPut upserts by id (delta re-write)', async () => {

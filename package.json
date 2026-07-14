@@ -31,6 +31,7 @@
 		"vite": "^8.0.16"
 	},
 	"dependencies": {
+		"cbor-x": "^1.6.4",
 		"dexie": "^4.4.4",
 		"hash-wasm": "^4.12.0"
 	}
