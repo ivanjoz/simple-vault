@@ -4,6 +4,7 @@ import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
 import { VaultDB } from './database.ts';
 import { META_LAST_SYNC, VaultRepository } from './repository.ts';
 import type { StoredRecord } from '../vault/types.ts';
+import type { Bytes } from '../crypto/types.ts';
 
 let counter = 0;
 function freshRepo(): VaultRepository {
@@ -13,9 +14,9 @@ function freshRepo(): VaultRepository {
 	);
 }
 
-const blob = { iv: 'aa', data: 'bb' };
+const encryptedBytes = new Uint8Array(28) as Bytes;
 function stored(id: string, updated: number, status: 'active' | 'deleted' = 'active'): StoredRecord {
-	return { id, folderId: 'f', updated, status, enc_data: blob };
+	return { id, folderId: 'f', updated, status, enc_data: encryptedBytes };
 }
 
 describe('VaultRepository', () => {
@@ -24,12 +25,6 @@ describe('VaultRepository', () => {
 		await repo.putRecords([stored('a', 1), stored('b', 2)]);
 		expect((await repo.allRecords()).length).toBe(2);
 		expect((await repo.getRecord('a'))?.updated).toBe(1);
-	});
-
-	test('builds the id -> updated delta map', async () => {
-		const repo = freshRepo();
-		await repo.putRecords([stored('a', 5), stored('b', 9)]);
-		expect(await repo.localUpdatedMap()).toEqual({ a: 5, b: 9 });
 	});
 
 	test('filters active records (tombstones excluded)', async () => {

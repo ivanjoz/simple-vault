@@ -5,7 +5,7 @@
 // test. Raw DEK bytes exist only transiently during create/unlock/rotate and are
 // zeroed immediately after use.
 
-import type { Bytes, EncBlob } from './types.ts';
+import type { Bytes } from './types.ts';
 import { aesDecrypt, aesEncrypt, importAesKey } from './aes.ts';
 import { randomBytes } from './random.ts';
 
@@ -20,11 +20,11 @@ export function importDek(dekBytes: Bytes, extractable = false): Promise<CryptoK
 	return importAesKey(dekBytes, extractable);
 }
 
-export function wrapDek(dekBytes: Bytes, kek: CryptoKey): Promise<EncBlob> {
+export function wrapDek(dekBytes: Bytes, kek: CryptoKey): Promise<Bytes> {
 	return aesEncrypt(kek, dekBytes);
 }
 
 /** Unwrap the DEK. Throws if the KEK is wrong (GCM authentication failure). */
-export function unwrapDek(wrapped: EncBlob, kek: CryptoKey): Promise<Bytes> {
+export function unwrapDek(wrapped: Bytes, kek: CryptoKey): Promise<Bytes> {
 	return aesDecrypt(kek, wrapped);
 }

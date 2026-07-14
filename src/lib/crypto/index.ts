@@ -4,9 +4,21 @@ export type { CreatedVault, CreateVaultOptions, UnlockMethod } from './envelope.
 
 export { utf8ToBytes, bytesToUtf8, bytesToBase64, base64ToBytes } from './encoding.ts';
 export { randomBytes, generateRecoveryKey, normalizeRecoveryKey, RECOVERY_KEY_GROUPS } from './random.ts';
-export { aesEncrypt, aesDecrypt, importAesKey } from './aes.ts';
+export {
+	aesEncrypt,
+	aesDecrypt,
+	encBlobToBytes,
+	bytesToEncBlob,
+	assertEncryptedBytes,
+	importAesKey
+} from './aes.ts';
 export { DEFAULT_KDF, deriveKek, deriveKekBytes } from './kdf.ts';
-export { generateDekBytes, importDek, wrapDek, unwrapDek } from './dek.ts';
+export {
+	generateDekBytes,
+	importDek,
+	wrapDek,
+	unwrapDek
+} from './dek.ts';
 export {
 	createVault,
 	unlockDekBytes,

@@ -148,6 +148,10 @@ webauthn: { credentialId, prfSalt, wrappedDek }
 pin:      { kdf, salt, wrappedDek, attempts }
 ```
 
+`credentialId`, `prfSalt`, `salt`, and `wrappedDek` are stored as native
+`Uint8Array` values. IndexedDB supports binary structured-clone values, so this
+device-local data does not need Base64 conversion.
+
 Key properties:
 
 - **Device-local, never synced.** It lives in IndexedDB, not in the Drive envelope,

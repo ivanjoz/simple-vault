@@ -2,9 +2,9 @@
 // leave this worker together: callers request metadata, secrets, or history.
 
 import {
-	base64ToBytes,
 	aesDecrypt,
 	aesEncrypt,
+	bytesToEncBlob,
 	bytesToBase64,
 	createVault,
 	decryptRecoveryKey,
@@ -18,19 +18,13 @@ import {
 	unlockDekBytes,
 	wrapDek
 } from '$lib/crypto';
-import type { Bytes, EncBlob, KdfParams, VaultHeader } from '$lib/crypto';
-import { decodeComponent, encodeComponent } from '$lib/vault/componentCodec';
-import {
-	historyData,
-	parseHistoryData,
-	parseRecordData,
-	recordData,
-	VaultRecord
-} from '$lib/vault/record';
+import type { Bytes, KdfParams, VaultHeader } from '$lib/crypto';
+import { decodeCbor, encodeCbor } from '$lib/vault/cbor';
 import type {
 	Folder,
 	HistoryItem,
 	PlainRecord,
+	RecordData,
 	StoredRecord
 } from '$lib/vault/types';
 import type { KeyOp, KeyOps } from './protocol.ts';
@@ -108,12 +102,12 @@ export class KeyEngine {
 	}
 
 	private exportDek(): KeyOps['exportDek']['res'] {
-		return { dek: bytesToBase64(this.requireDekBytes()) };
+		return { dek: new Uint8Array(this.requireDekBytes()) };
 	}
 
 	private async restoreDek(req: KeyOps['restoreDek']['req']): Promise<KeyOps['restoreDek']['res']> {
 		try {
-			const bytes = base64ToBytes(req.dek);
+			const bytes = new Uint8Array(req.dek);
 			this.setDek(await importDek(bytes), bytes);
 			return { ok: true };
 		} catch {
@@ -121,30 +115,29 @@ export class KeyEngine {
 		}
 	}
 
-	private async encryptRecords(req: KeyOps['encryptRecords']['req']): Promise<KeyOps['encryptRecords']['res']> {
-		return { stored: await this.encryptPlainRecords(this.requireDek(), req.records) };
-	}
-
-	private async encryptPlainRecords(dek: CryptoKey, records: PlainRecord[]): Promise<StoredRecord[]> {
+	private async encryptRecords(
+		records: PlainRecord[],
+		dek = this.requireDek()
+	): Promise<StoredRecord[]> {
 		const stored: StoredRecord[] = [];
 		for (const record of records) {
 			const item: StoredRecord = {
 				id: record.id,
 				folderId: record.folderId,
 				updated: record.updated,
-				status: record.status,
+				status: 'active',
 				enc_data: await encryptCbor(
 					dek,
-					recordData(record.title, record.username, record.password, record.url, record.notes),
-					recordAad(record.folderId, record.id, record.updated)
+					record.data,
+					aad('record', record.folderId, record.id, record.updated)
 				)
 			};
 			if (record.history.length) {
 				item.historyUpdated = record.historyUpdated ?? record.updated;
 				item.enc_history = await encryptCbor(
 					dek,
-					historyData(record.history),
-					historyAad(record.folderId, record.id, item.historyUpdated)
+					record.history,
+					aad('history', record.folderId, record.id, item.historyUpdated)
 				);
 			}
 			stored.push(item);
@@ -152,68 +145,75 @@ export class KeyEngine {
 		return stored;
 	}
 
-	private async decryptMetas(req: KeyOps['decryptMetas']['req']): Promise<KeyOps['decryptMetas']['res']> {
+	private async decryptMetas(records: StoredRecord[]): Promise<KeyOps['decryptMetas']['res']> {
 		const dek = this.requireDek();
 		const metas = [];
-		for (const record of req.records) {
-			const value = new VaultRecord(await this.decryptRecordData(dek, record));
-			metas.push({ title: value.title, username: value.username });
+		for (const record of records) {
+			const [title, username] = await this.decryptRecordData(dek, record);
+			metas.push({ title, username });
 		}
-		return { metas };
+		return metas;
 	}
 
-	private async decryptSecret(req: KeyOps['decryptSecret']['req']): Promise<KeyOps['decryptSecret']['res']> {
-		const value = new VaultRecord(await this.decryptRecordData(this.requireDek(), req.record));
-		return { secret: value.toSecret() };
+	private async decryptSecret(record: StoredRecord): Promise<KeyOps['decryptSecret']['res']> {
+		const [, , password, url, notes] = await this.decryptRecordData(this.requireDek(), record);
+		return { password, url, notes };
 	}
 
-	private async decryptHistory(req: KeyOps['decryptHistory']['req']): Promise<KeyOps['decryptHistory']['res']> {
-		return { history: await this.decryptStoredHistory(this.requireDek(), req.record) };
+	private decryptHistory(record: StoredRecord): Promise<HistoryItem[]> {
+		return this.decryptStoredHistory(this.requireDek(), record);
 	}
 
-	private async decryptRecordData(dek: CryptoKey, record: StoredRecord) {
-		return parseRecordData(
-			await decryptCbor(
-				dek,
-				record.enc_data,
-				recordAad(record.folderId, record.id, record.updated)
-			)
+	private async decryptRecordData(dek: CryptoKey, record: StoredRecord): Promise<RecordData> {
+		if (!record.enc_data) throw new Error('record has no encrypted data');
+		const data = await decryptCbor(
+			dek,
+			record.enc_data,
+			aad('record', record.folderId, record.id, record.updated)
 		);
+		if (!Array.isArray(data) || data.length !== 5 || data.some((value) => typeof value !== 'string')) {
+			throw new Error('invalid record data');
+		}
+		return data as RecordData;
 	}
 
 	private async decryptStoredHistory(dek: CryptoKey, record: StoredRecord): Promise<HistoryItem[]> {
 		if (!record.enc_history || record.historyUpdated === undefined) return [];
-		return parseHistoryData(
-			await decryptCbor(
-				dek,
-				record.enc_history,
-				historyAad(record.folderId, record.id, record.historyUpdated)
-			)
+		const history = await decryptCbor(
+			dek,
+			record.enc_history,
+			aad('history', record.folderId, record.id, record.historyUpdated)
 		);
+		if (!Array.isArray(history)) throw new Error('invalid history data');
+		return history as HistoryItem[];
 	}
 
-	private async encryptFolders(req: KeyOps['encryptFolders']['req']): Promise<KeyOps['encryptFolders']['res']> {
+	private async encryptFolders(input: Folder[]): Promise<Folder[]> {
 		const dek = this.requireDek();
 		const folders: Folder[] = [];
-		for (const folder of req.folders) {
+		for (const folder of input) {
 			folders.push({
 				...folder,
-				enc_name: await encryptCbor(dek, [folder.name], folderAad(folder.id, folder.updated))
+				enc_name: await encryptCbor(dek, [folder.name], aad('folder', folder.id, folder.id, folder.updated))
 			});
 		}
-		return { folders };
+		return folders;
 	}
 
-	private async decryptFolders(req: KeyOps['decryptFolders']['req']): Promise<KeyOps['decryptFolders']['res']> {
+	private async decryptFolders(input: Folder[]): Promise<Folder[]> {
 		const dek = this.requireDek();
 		const folders: Folder[] = [];
-		for (const folder of req.folders) {
+		for (const folder of input) {
 			if (!folder.enc_name) throw new Error('folder name is not encrypted');
-			const value = await decryptCbor(dek, folder.enc_name, folderAad(folder.id, folder.updated));
+			const value = await decryptCbor(
+				dek,
+				folder.enc_name,
+				aad('folder', folder.id, folder.id, folder.updated)
+			);
 			if (!Array.isArray(value) || typeof value[0] !== 'string') throw new Error('invalid folder data');
 			folders.push({ ...folder, name: value[0] });
 		}
-		return { folders };
+		return folders;
 	}
 
 	private async getRecoveryKey(req: KeyOps['decryptRecoveryKey']['req']): Promise<KeyOps['decryptRecoveryKey']['res']> {
@@ -225,25 +225,23 @@ export class KeyEngine {
 		const recoveryKey = await decryptRecoveryKey(req.currentHeader, oldDek);
 		const plains: PlainRecord[] = [];
 		for (const stored of req.stored) {
-			const value = new VaultRecord(await this.decryptRecordData(oldDek, stored));
+			if (stored.status === 'deleted') continue;
 			plains.push({
 				id: stored.id,
 				folderId: stored.folderId,
 				updated: stored.updated,
-				status: stored.status,
-				title: value.title,
-				username: value.username,
-				password: value.password,
-				url: value.siteUrl,
-				notes: value.notes,
+				data: await this.decryptRecordData(oldDek, stored),
 				history: await this.decryptStoredHistory(oldDek, stored),
 				historyUpdated: stored.historyUpdated
 			});
 		}
 
 		const header = await this.rekey(req.currentHeader.kdf, req.newPassword, recoveryKey);
-		const stored = await this.encryptPlainRecords(this.requireDek(), plains);
-		const { folders } = await this.encryptFolders({ folders: req.folders });
+		const stored = [
+			...(await this.encryptRecords(plains)),
+			...req.stored.filter((record) => record.status === 'deleted')
+		];
+		const folders = await this.encryptFolders(req.folders);
 		return { header, stored, folders };
 	}
 
@@ -255,7 +253,7 @@ export class KeyEngine {
 		const header: VaultHeader = {
 			...req.currentHeader,
 			saltRecovery: bytesToBase64(saltRecovery),
-			wrappedDEK_recovery: await wrapDek(this.requireDekBytes(), kekRecovery),
+			wrappedDEK_recovery: bytesToEncBlob(await wrapDek(this.requireDekBytes(), kekRecovery)),
 			enc_recoveryKey: await encryptJson(dek, recoveryKey),
 			updated: Math.floor(Date.now() / 1000)
 		};
@@ -274,8 +272,8 @@ export class KeyEngine {
 			kdf,
 			saltPassword: bytesToBase64(saltPassword),
 			saltRecovery: bytesToBase64(saltRecovery),
-			wrappedDEK_password: await wrapDek(dekBytes, kekPassword),
-			wrappedDEK_recovery: await wrapDek(dekBytes, kekRecovery),
+			wrappedDEK_password: bytesToEncBlob(await wrapDek(dekBytes, kekPassword)),
+			wrappedDEK_recovery: bytesToEncBlob(await wrapDek(dekBytes, kekRecovery)),
 			enc_recoveryKey: await encryptJson(dek, recoveryKey),
 			updated: Math.floor(Date.now() / 1000)
 		};
@@ -284,30 +282,18 @@ export class KeyEngine {
 	}
 }
 
-function recordAad(folderId: string, id: string, updated: number): Bytes {
-	return aad('record', folderId, id, updated);
-}
-
-function historyAad(folderId: string, id: string, updated: number): Bytes {
-	return aad('history', folderId, id, updated);
-}
-
-function folderAad(folderId: string, updated: number): Bytes {
-	return aad('folder', folderId, folderId, updated);
-}
-
 function aad(kind: string, folderId: string, id: string, updated: number): Bytes {
 	return new TextEncoder().encode(`sv2\0${kind}\0${folderId}\0${id}\0${updated}`) as Bytes;
 }
 
-function encryptCbor(dek: CryptoKey, value: unknown, additionalData: Bytes): Promise<EncBlob> {
-	return aesEncrypt(dek, encodeComponent(value), additionalData);
+function encryptCbor(dek: CryptoKey, value: unknown, additionalData: Bytes): Promise<Bytes> {
+	return aesEncrypt(dek, encodeCbor(value), additionalData);
 }
 
 async function decryptCbor(
 	dek: CryptoKey,
-	blob: EncBlob,
+	packed: Bytes,
 	additionalData: Bytes
 ): Promise<unknown> {
-	return decodeComponent(await aesDecrypt(dek, blob, additionalData));
+	return decodeCbor(await aesDecrypt(dek, packed, additionalData));
 }

@@ -1,6 +1,6 @@
 // RPC protocol between the main thread and the key-holding Web Worker.
 
-import type { KdfParams, VaultHeader } from '$lib/crypto';
+import type { Bytes, KdfParams, VaultHeader } from '$lib/crypto';
 import type {
 	Folder,
 	HistoryItem,
@@ -21,16 +21,16 @@ export interface KeyOps {
 	};
 	lock: { req: Record<string, never>; res: { unlocked: false } };
 	status: { req: Record<string, never>; res: { unlocked: boolean } };
-	exportDek: { req: Record<string, never>; res: { dek: string } };
-	restoreDek: { req: { dek: string }; res: { ok: boolean } };
+	exportDek: { req: Record<string, never>; res: { dek: Bytes } };
+	restoreDek: { req: { dek: Bytes }; res: { ok: boolean } };
 
-	encryptRecords: { req: { records: PlainRecord[] }; res: { stored: StoredRecord[] } };
-	decryptMetas: { req: { records: StoredRecord[] }; res: { metas: MetaPlain[] } };
-	decryptSecret: { req: { record: StoredRecord }; res: { secret: SecretPlain } };
-	decryptHistory: { req: { record: StoredRecord }; res: { history: HistoryItem[] } };
+	encryptRecords: { req: PlainRecord[]; res: StoredRecord[] };
+	decryptMetas: { req: StoredRecord[]; res: MetaPlain[] };
+	decryptSecret: { req: StoredRecord; res: SecretPlain };
+	decryptHistory: { req: StoredRecord; res: HistoryItem[] };
 
-	encryptFolders: { req: { folders: Folder[] }; res: { folders: Folder[] } };
-	decryptFolders: { req: { folders: Folder[] }; res: { folders: Folder[] } };
+	encryptFolders: { req: Folder[]; res: Folder[] };
+	decryptFolders: { req: Folder[]; res: Folder[] };
 
 	decryptRecoveryKey: { req: { header: VaultHeader }; res: { recoveryKey: string } };
 	changeMasterPassword: {

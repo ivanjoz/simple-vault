@@ -7,7 +7,7 @@
  */
 export type Bytes = Uint8Array<ArrayBuffer>;
 
-/** An AES-GCM ciphertext together with its IV. Both fields are base64. */
+/** JSON-safe AES-GCM ciphertext. Binary persistence uses packed Bytes instead. */
 export interface EncBlob {
 	iv: string;
 	data: string;

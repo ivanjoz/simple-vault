@@ -158,10 +158,10 @@
 					Password history
 				</div>
 				<ul class="flex flex-col gap-4">
-					{#each history as h (h.u)}
+					{#each history as h (h[1])}
 						<li class="flex justify-between gap-12 text-xs">
-							<span class="truncate font-mono text-text">{h.p}</span>
-							<span class="shrink-0 text-muted">{new Date(h.u).toLocaleDateString()}</span>
+							<span class="truncate font-mono text-text">{h[0]}</span>
+							<span class="shrink-0 text-muted">{new Date(h[1] * 1000).toLocaleDateString()}</span>
 						</li>
 					{/each}
 				</ul>

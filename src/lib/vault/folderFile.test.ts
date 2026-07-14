@@ -1,15 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 
-import { bytesToBase64 } from '$lib/crypto';
-import type { EncBlob } from '$lib/crypto';
+import type { Bytes } from '$lib/crypto';
 import { decodeFolderFile, decodeId, encodeFolderFile, encodeId } from './folderFile.ts';
 import type { Folder, StoredRecord } from './types.ts';
 
-function blob(seed: number): EncBlob {
-	return {
-		iv: bytesToBase64(new Uint8Array(12).fill(seed)),
-		data: bytesToBase64(new Uint8Array(24).fill(seed + 1))
-	};
+function encryptedBytes(seed: number): Bytes {
+	return new Uint8Array(36).fill(seed) as Bytes;
 }
 
 describe('CBOR v2 folder file', () => {
@@ -25,7 +21,7 @@ describe('CBOR v2 folder file', () => {
 			name: 'not persisted',
 			updated: 1_700_000_000,
 			status: 'active',
-			enc_name: blob(1)
+			enc_name: encryptedBytes(1)
 		};
 		const records: StoredRecord[] = [
 			{
@@ -33,16 +29,15 @@ describe('CBOR v2 folder file', () => {
 				folderId: folder.id,
 				updated: 1_700_000_001,
 				status: 'active',
-				enc_data: blob(2),
-				enc_history: blob(3),
+				enc_data: encryptedBytes(2),
+				enc_history: encryptedBytes(3),
 				historyUpdated: 1_700_000_002
 			},
 			{
 				id: 'jtfano2c',
 				folderId: folder.id,
 				updated: 1_700_000_003,
-				status: 'deleted',
-				enc_data: blob(4)
+				status: 'deleted'
 			}
 		];
 
@@ -57,7 +52,7 @@ describe('CBOR v2 folder file', () => {
 			name: '',
 			updated: 1,
 			status: 'active',
-			enc_name: blob(1)
+			enc_name: encryptedBytes(1)
 		};
 		const encoded = encodeFolderFile(folder, []);
 		expect(() => decodeFolderFile(encoded.slice(0, -1))).toThrow('CBOR');

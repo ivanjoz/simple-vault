@@ -1,7 +1,7 @@
 // High-level vault operations built on the crypto primitives (PLAN.md §3).
 
 import type { Bytes, EncBlob, KdfParams, VaultHeader } from './types.ts';
-import { aesDecrypt, aesEncrypt } from './aes.ts';
+import { aesDecrypt, aesEncrypt, bytesToEncBlob, encBlobToBytes } from './aes.ts';
 import { generateDekBytes, importDek, unwrapDek, wrapDek } from './dek.ts';
 import { base64ToBytes, bytesToUtf8, utf8ToBytes } from './encoding.ts';
 import { DEFAULT_KDF, deriveKek } from './kdf.ts';
@@ -48,8 +48,8 @@ export async function createVault(
 		kdf,
 		saltPassword: bytesToBase64(saltPassword),
 		saltRecovery: bytesToBase64(saltRecovery),
-		wrappedDEK_password: await wrapDek(dekBytes, kekPassword),
-		wrappedDEK_recovery: await wrapDek(dekBytes, kekRecovery),
+		wrappedDEK_password: bytesToEncBlob(await wrapDek(dekBytes, kekPassword)),
+		wrappedDEK_recovery: bytesToEncBlob(await wrapDek(dekBytes, kekRecovery)),
 		enc_recoveryKey: await encryptJson(dek, recoveryKey),
 		updated: now
 	};
@@ -68,7 +68,7 @@ export async function unlockDekBytes(
 	const wrapped = isPassword ? header.wrappedDEK_password : header.wrappedDEK_recovery;
 	const normalized = isPassword ? secret : normalizeRecoveryKey(secret);
 	const kek = await deriveKek(normalized, salt, header.kdf);
-	return unwrapDek(wrapped, kek); // throws on wrong secret (GCM auth failure)
+	return unwrapDek(encBlobToBytes(wrapped), kek); // throws on wrong secret
 }
 
 /** Unlock with the master password. Throws on wrong password. */
@@ -97,12 +97,12 @@ export async function decryptRecoveryKey(
 
 /** Encrypt an arbitrary JSON-serialisable value with the DEK. */
 export async function encryptJson(dek: CryptoKey, value: unknown, aad?: Bytes): Promise<EncBlob> {
-	return aesEncrypt(dek, utf8ToBytes(JSON.stringify(value)), aad);
+	return bytesToEncBlob(await aesEncrypt(dek, utf8ToBytes(JSON.stringify(value)), aad));
 }
 
 /** Decrypt an {@link EncBlob} produced by {@link encryptJson}. */
 export async function decryptJson<T>(dek: CryptoKey, blob: EncBlob, aad?: Bytes): Promise<T> {
-	return JSON.parse(bytesToUtf8(await aesDecrypt(dek, blob, aad))) as T;
+	return JSON.parse(bytesToUtf8(await aesDecrypt(dek, encBlobToBytes(blob), aad))) as T;
 }
 
 async function toDek(dekBytes: Bytes): Promise<CryptoKey> {

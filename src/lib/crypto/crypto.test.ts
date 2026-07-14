@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 
-import { aesDecrypt, aesEncrypt, importAesKey } from './aes.ts';
+import {
+	aesDecrypt,
+	aesEncrypt,
+	bytesToEncBlob,
+	encBlobToBytes,
+	importAesKey
+} from './aes.ts';
 import { base64ToBytes, bytesToBase64, bytesToUtf8, utf8ToBytes } from './encoding.ts';
 import { generateDekBytes, importDek, unwrapDek, wrapDek } from './dek.ts';
 import { deriveKekBytes } from './kdf.ts';
@@ -47,10 +53,14 @@ describe('recovery key', () => {
 });
 
 describe('aes-gcm', () => {
-	test('round-trips a payload', async () => {
+	test('round-trips the packed binary representation without Base64', async () => {
 		const key = await importAesKey(randomBytes(32));
-		const blob = await aesEncrypt(key, utf8ToBytes('secret'));
-		expect(bytesToUtf8(await aesDecrypt(key, blob))).toBe('secret');
+		const plaintext = utf8ToBytes('secret');
+		const packed = await aesEncrypt(key, plaintext);
+		expect(packed).toBeInstanceOf(Uint8Array);
+		expect(packed).toHaveLength(plaintext.length + 12 + 16);
+		expect(bytesToUtf8(await aesDecrypt(key, packed))).toBe('secret');
+		expect(encBlobToBytes(bytesToEncBlob(packed))).toEqual(packed);
 	});
 
 	test('authenticates additional data', async () => {

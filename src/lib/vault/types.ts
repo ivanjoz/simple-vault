@@ -1,14 +1,11 @@
 // Application and local IndexedDB models for the v2 per-folder format.
 
-import type { EncBlob } from '$lib/crypto';
+import type { Bytes } from '$lib/crypto';
 
 export type RecordStatus = 'active' | 'deleted';
 
-/** One previous password and the Unix-second update that replaced it. */
-export interface HistoryItem {
-	p: string;
-	u: number;
-}
+/** Previous password and the Unix-second update that replaced it. */
+export type HistoryItem = [password: string, updated: number];
 
 /** Stable positional plaintext encrypted as the main record component. */
 export type RecordData = [
@@ -32,12 +29,12 @@ export interface SecretPlain {
 	notes: string;
 }
 
-/** Transient full value accepted by the crypto worker for an edit/rekey. */
-export interface PlainRecord extends MetaPlain, SecretPlain {
+/** Transient value accepted by the crypto worker for an edit/rekey. */
+export interface PlainRecord {
 	id: string;
 	folderId: string;
 	updated: number;
-	status: RecordStatus;
+	data: RecordData;
 	history: HistoryItem[];
 	/** Independent history timestamp; absent until history exists. */
 	historyUpdated?: number;
@@ -49,8 +46,10 @@ export interface StoredRecord {
 	folderId: string;
 	updated: number;
 	status: RecordStatus;
-	enc_data: EncBlob;
-	enc_history?: EncBlob;
+	/** Packed AES-GCM bytes: IV | ciphertext | authentication tag. */
+	/** Absent on deletion tombstones. */
+	enc_data?: Bytes;
+	enc_history?: Bytes;
 	historyUpdated?: number;
 }
 
@@ -59,8 +58,8 @@ export interface Folder {
 	name: string;
 	updated: number;
 	status: RecordStatus;
-	/** Cached encrypted name used when rebuilding the Drive folder file. */
-	enc_name?: EncBlob;
+	/** Packed encrypted name used directly when rebuilding the Drive folder file. */
+	enc_name?: Bytes;
 }
 
 /** Decrypted metadata for rendering a card (no secret material). */

@@ -5,13 +5,13 @@
 // throttling (see vault.svelte.ts) for casual protection. This path exists as a
 // fallback for devices without a platform authenticator.
 
-import { base64ToBytes, bytesToBase64, DEFAULT_KDF, deriveKek, randomBytes } from '$lib/crypto';
-import type { KdfParams } from '$lib/crypto';
+import { DEFAULT_KDF, deriveKek, randomBytes } from '$lib/crypto';
+import type { Bytes, KdfParams } from '$lib/crypto';
 
 const PIN_SALT_BYTES = 16;
 
 export interface PinSetup {
-	salt: string;
+	salt: Bytes;
 	kdf: KdfParams;
 	/** AES-GCM key derived from the PIN — used to wrap the DEK. */
 	key: CryptoKey;
@@ -21,10 +21,10 @@ export interface PinSetup {
 export async function enrollPinKey(pin: string): Promise<PinSetup> {
 	const salt = randomBytes(PIN_SALT_BYTES);
 	const kdf = DEFAULT_KDF;
-	return { salt: bytesToBase64(salt), kdf, key: await deriveKek(pin, salt, kdf) };
+	return { salt, kdf, key: await deriveKek(pin, salt, kdf) };
 }
 
 /** Re-derive the wrapping key for an existing PIN unlocker. */
-export async function derivePinKey(pin: string, saltB64: string, kdf: KdfParams): Promise<CryptoKey> {
-	return deriveKek(pin, base64ToBytes(saltB64), kdf);
+export async function derivePinKey(pin: string, salt: Bytes, kdf: KdfParams): Promise<CryptoKey> {
+	return deriveKek(pin, salt, kdf);
 }

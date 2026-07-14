@@ -17,17 +17,6 @@ export const META_LOCAL_UNLOCK = 'localUnlock';
 export class VaultRepository {
 	constructor(private readonly db: VaultDB = new VaultDB()) {}
 
-	// --- Delta support -------------------------------------------------------
-
-	/** `id -> updated` for every local record, for delta comparison on pull. */
-	async localUpdatedMap(): Promise<Record<string, number>> {
-		const map: Record<string, number> = {};
-		await this.db.records.each((r) => {
-			map[r.id] = r.updated;
-		});
-		return map;
-	}
-
 	// --- Records -------------------------------------------------------------
 
 	async putRecords(records: StoredRecord[]): Promise<void> {

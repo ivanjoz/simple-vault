@@ -32,7 +32,7 @@ export function decodeBackup(input: Bytes): VaultBackup {
 	const folderIds = new Set<string>();
 	for (const raw of value[2]) {
 		if (!(raw instanceof Uint8Array)) throw new Error('invalid backup folder bytes');
-		const bytes = new Uint8Array(raw) as Bytes;
+		const bytes = raw as Bytes;
 		const id = decodeFolderFile(bytes).folder.id;
 		if (folderIds.has(id)) throw new Error('duplicate backup folder');
 		folderIds.add(id);

@@ -1,26 +1,9 @@
 // Pure delta / merge helpers for synchronization (PLAN.md §6). No I/O, no crypto
 // — kept side-effect-free so the conflict logic is directly unit-testable.
 
-import type { PlainRecord } from '$lib/vault/types';
-
 interface Versioned {
 	id: string;
 	updated: number;
-}
-
-/**
- * Given the local `id -> updated` map and the remote records, return only those
- * that are new or strictly newer remotely. This is what avoids rewriting
- * unchanged rows into IndexedDB on every pull.
- */
-export function selectChangedRecords(
-	localUpdated: Record<string, number>,
-	remote: PlainRecord[]
-): PlainRecord[] {
-	return remote.filter((r) => {
-		const local = localUpdated[r.id];
-		return local === undefined || r.updated > local;
-	});
 }
 
 /**

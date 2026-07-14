@@ -121,9 +121,8 @@ type HistoryData = Array<[
 ]>;
 ```
 
-Existing positions never change meaning. Future optional fields are appended. A
-folder-file format revision or per-component codec revision supplies defaults for
-missing trailing positions.
+Existing positions never change meaning. Future optional fields are appended with
+defaults supplied by a folder-file format revision.
 
 History is absent until the first password change. Non-password edits copy the
 history ciphertext without decrypting it. A password change decrypts that record's
@@ -146,7 +145,7 @@ type FolderFile = [
     id: ByteString,              // five bytes
     updated: number,
     flags: number,               // bit 0 = deleted
-    encryptedData: ByteString
+    encryptedData?: ByteString   // absent for a tombstone
   ]>,
   histories: Array<[
     id: ByteString,
@@ -168,8 +167,8 @@ duplicate IDs, orphan histories, malformed CBOR, and trailing bytes.
 
 ## 7. Local IndexedDB model
 
-IndexedDB remains optimized for UI and merge operations rather than mirroring the
-wire bytes exactly:
+IndexedDB keeps named metadata for indexes and merge operations, while component
+ciphertexts use the exact packed bytes written to the Drive folder file:
 
 ```ts
 interface StoredRecord {
@@ -177,8 +176,9 @@ interface StoredRecord {
   folderId: string;
   updated: number;
   status: 'active' | 'deleted';
-  enc_data: EncBlob;
-  enc_history?: EncBlob;
+  enc_data?: Bytes;       // absent for a tombstone
+  enc_history?: Bytes;
+  historyUpdated?: number;
 }
 ```
 
@@ -186,6 +186,11 @@ interface StoredRecord {
 index and merge without decrypting every record. They are not repeated inside the
 encrypted `RecordData` tuple. Folder membership is derived from the containing file
 on Drive.
+
+`Uint8Array` is supported natively by IndexedDB and Worker structured cloning.
+Record, history, encrypted folder-name, device credential, salt, and locally
+wrapped-DEK bytes therefore remain binary end-to-end. Base64 is used only at text
+boundaries such as the JSON header and `sessionStorage`.
 
 Card loading decrypts `enc_data` inside the key worker and returns only title and
 username. Password, URL, and notes are returned only for an explicit record action.

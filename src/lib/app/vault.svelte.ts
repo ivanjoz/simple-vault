@@ -212,9 +212,9 @@ class VaultState {
 			const { header, recoveryKey } = await this.client.call('create', { masterPassword });
 			await this.repo.setMeta(META_HEADER, header);
 			const now = updatedNow();
-			const { folders } = await this.client.call('encryptFolders', {
-				folders: [{ id: ROOT_FOLDER_ID, name: '', updated: now, status: 'active' }]
-			});
+			const folders = await this.client.call('encryptFolders', [
+				{ id: ROOT_FOLDER_ID, name: '', updated: now, status: 'active' }
+			]);
 			await this.repo.putFolders(folders);
 			// If Drive is connected, establish the remote vault file immediately.
 			if (this.#driveToken) {
@@ -292,7 +292,7 @@ class VaultState {
 		if (!this.persistSession) return false;
 		const saved = sessionStorage.getItem(SESSION_DEK_KEY);
 		if (!saved) return false;
-		const { ok } = await this.client.call('restoreDek', { dek: saved });
+		const { ok } = await this.client.call('restoreDek', { dek: base64ToBytes(saved) });
 		if (!ok) sessionStorage.removeItem(SESSION_DEK_KEY);
 		return ok;
 	}
@@ -301,7 +301,7 @@ class VaultState {
 		if (!browser || !this.persistSession) return;
 		try {
 			const { dek } = await this.client.call('exportDek', {});
-			sessionStorage.setItem(SESSION_DEK_KEY, dek);
+			sessionStorage.setItem(SESSION_DEK_KEY, bytesToBase64(dek));
 		} catch {
 			/* ignore — persistence is best-effort */
 		}
@@ -325,7 +325,7 @@ class VaultState {
 	/** Raw DEK bytes for wrapping under a biometric/PIN key. Requires an unlocked vault. */
 	async #exportDekBytes(): Promise<Bytes> {
 		const { dek } = await this.client.call('exportDek', {});
-		return base64ToBytes(dek);
+		return dek;
 	}
 
 	/** Enrol this device's platform authenticator (fingerprint/face/PIN) as an unlocker. */
@@ -438,9 +438,8 @@ class VaultState {
 				return;
 			}
 
-			const dekB64 = bytesToBase64(dekBytes);
+			const { ok } = await this.client.call('restoreDek', { dek: dekBytes });
 			dekBytes.fill(0);
-			const { ok } = await this.client.call('restoreDek', { dek: dekB64 });
 			if (!ok) {
 				this.error = 'Failed to restore the vault key.';
 				return;
@@ -512,7 +511,7 @@ class VaultState {
 	/** Load active records' metadata (title/username) for card rendering. */
 	async loadCards(): Promise<void> {
 		const records = await this.repo.activeRecords();
-		const { metas } = await this.client.call('decryptMetas', { records });
+		const metas = await this.client.call('decryptMetas', records);
 		this.cards = records.map((r, i) => ({
 			id: r.id,
 			folderId: r.folderId === ROOT_FOLDER_ID ? '' : r.folderId,
@@ -527,7 +526,7 @@ class VaultState {
 	async copyPassword(id: string): Promise<void> {
 		const record = await this.repo.getRecord(id);
 		if (!record) return;
-		const { secret } = await this.client.call('decryptSecret', { record });
+		const secret = await this.client.call('decryptSecret', record);
 		const handle = copyWithAutoClear(secret.password);
 		await handle.written;
 		this.copiedId = id;
@@ -543,15 +542,14 @@ class VaultState {
 	async getSecret(id: string): Promise<SecretPlain | null> {
 		const record = await this.repo.getRecord(id);
 		if (!record) return null;
-		const { secret } = await this.client.call('decryptSecret', { record });
-		return secret;
+		return this.client.call('decryptSecret', record);
 	}
 
 	/** Decrypt password history only for an explicit reveal/edit that needs it. */
 	async getHistory(id: string): Promise<HistoryItem[]> {
 		const record = await this.repo.getRecord(id);
 		if (!record) return [];
-		return (await this.client.call('decryptHistory', { record })).history;
+		return this.client.call('decryptHistory', record);
 	}
 
 	/** Create or update a record, maintaining password history on change. */
@@ -561,26 +559,20 @@ class VaultState {
 		const folderId = input.folderId || ROOT_FOLDER_ID;
 		let history: HistoryItem[] = [];
 		let password = input.password;
-		let previousFolderId: string | null = null;
-		let existing: StoredRecord | undefined;
 		let historyChanged = false;
+		const existing = input.id ? await this.repo.getRecord(input.id) : undefined;
 
-		if (input.id) {
-			existing = await this.repo.getRecord(input.id);
-			if (existing) {
-				previousFolderId = existing.folderId;
-				const { secret } = await this.client.call('decryptSecret', { record: existing });
-				if (input.password === '') {
-					// Blank means "keep the current password" (the editor never held it).
-					password = secret.password;
-				} else if (secret.password !== input.password) {
-					history = (await this.client.call('decryptHistory', { record: existing })).history;
-					history = [{ p: secret.password, u: existing.updated }, ...history].slice(0, HISTORY_LIMIT);
-					historyChanged = true;
-				}
-				if (existing.folderId !== folderId && !historyChanged && existing.enc_history) {
-					history = (await this.client.call('decryptHistory', { record: existing })).history;
-				}
+		if (existing) {
+			const secret = await this.client.call('decryptSecret', existing);
+			if (input.password === '') {
+				password = secret.password;
+			} else if (secret.password !== input.password) {
+				history = await this.client.call('decryptHistory', existing);
+				history = [[secret.password, existing.updated], ...history].slice(0, HISTORY_LIMIT);
+				historyChanged = true;
+			}
+			if (existing.folderId !== folderId && !historyChanged && existing.enc_history) {
+				history = await this.client.call('decryptHistory', existing);
 			}
 		}
 
@@ -588,23 +580,18 @@ class VaultState {
 			id,
 			folderId,
 			updated: now,
-			status: 'active',
-			title: input.title,
-			username: input.username,
-			password,
-			url: input.url,
-			notes: input.notes,
+			data: [input.title, input.username, password, input.url, input.notes],
 			history,
 			historyUpdated: historyChanged ? now : existing?.historyUpdated
 		};
-		const { stored } = await this.client.call('encryptRecords', { records: [plain] });
+		const stored = await this.client.call('encryptRecords', [plain]);
 		if (existing?.enc_history && !historyChanged && existing.folderId === folderId) {
 			stored[0].enc_history = existing.enc_history;
 			stored[0].historyUpdated = existing.historyUpdated;
 		}
 		await this.repo.putRecords(stored);
 		await this.#uploadFolder(folderId);
-		if (previousFolderId && previousFolderId !== folderId) await this.#uploadFolder(previousFolderId);
+		if (existing && existing.folderId !== folderId) await this.#uploadFolder(existing.folderId);
 		await this.loadCards();
 	}
 
@@ -612,30 +599,16 @@ class VaultState {
 	async deleteRecord(id: string): Promise<void> {
 		const existing = await this.repo.getRecord(id);
 		if (!existing) return;
-		const [{ metas }, { secret }] = await Promise.all([
-			this.client.call('decryptMetas', { records: [existing] }),
-			this.client.call('decryptSecret', { record: existing })
+		await this.repo.putRecords([
+			{ id: existing.id, folderId: existing.folderId, updated: updatedNow(), status: 'deleted' }
 		]);
-		const tombstone: PlainRecord = {
-			id: existing.id,
-			folderId: existing.folderId,
-			updated: updatedNow(),
-			status: 'deleted',
-			title: metas[0].title,
-			username: metas[0].username,
-			password: secret.password,
-			url: secret.url,
-			notes: secret.notes,
-			history: []
-		};
-		await this.repo.putRecords((await this.client.call('encryptRecords', { records: [tombstone] })).stored);
 		await this.#uploadFolder(existing.folderId);
 		await this.loadCards();
 	}
 
 	async addFolder(name: string): Promise<string> {
 		const folder: Folder = { id: createId(), name, updated: updatedNow(), status: 'active' };
-		const { folders } = await this.client.call('encryptFolders', { folders: [folder] });
+		const folders = await this.client.call('encryptFolders', [folder]);
 		await this.repo.putFolders(folders);
 		await this.#uploadFolder(folder.id);
 		this.folders = (await this.repo.activeFolders()).filter((item) => item.id !== ROOT_FOLDER_ID);
@@ -668,7 +641,7 @@ class VaultState {
 				remoteBytes.set(folderId, bytes);
 				const decoded = decodeFolderFile(bytes);
 				if (decoded.folder.id !== folderId) throw new Error('folder filename/content mismatch');
-				const { folders } = await this.client.call('decryptFolders', { folders: [decoded.folder] });
+				const folders = await this.client.call('decryptFolders', [decoded.folder]);
 				const localFolder = await this.repo.getFolder(folderId);
 				await this.repo.putFolders(mergeById(localFolder ? [localFolder] : [], folders));
 				remoteRecords = mergeStoredRecords(remoteRecords, decoded.records);
@@ -813,7 +786,7 @@ class VaultState {
 		let folder = await this.repo.getFolder(folderId);
 		if (!folder) return;
 		if (!folder.enc_name) {
-			folder = (await this.client.call('encryptFolders', { folders: [folder] })).folders[0];
+			folder = (await this.client.call('encryptFolders', [folder]))[0];
 			await this.repo.putFolders([folder]);
 		}
 		const bytes = encodeFolderFile(folder, await this.repo.recordsForFolder(folderId));
@@ -832,7 +805,7 @@ class VaultState {
 	async #decryptCachedFolderNames(): Promise<void> {
 		const encrypted = (await this.repo.allFolders()).filter((folder) => folder.enc_name);
 		if (!encrypted.length) return;
-		await this.repo.putFolders((await this.client.call('decryptFolders', { folders: encrypted })).folders);
+		await this.repo.putFolders(await this.client.call('decryptFolders', encrypted));
 	}
 
 	async #connectDrive(prompt: '' | 'none' = ''): Promise<string> {

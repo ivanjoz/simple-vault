@@ -4,25 +4,25 @@
 // user PIN/pattern (Argon2id-stretched). Stored ONLY in this device's IndexedDB
 // (never synced to Drive), so each device enrols independently.
 
-import type { EncBlob, KdfParams } from '$lib/crypto';
+import type { Bytes, KdfParams } from '$lib/crypto';
 
 export interface WebAuthnUnlocker {
 	kind: 'webauthn';
-	/** base64url of the credential rawId, used in allowCredentials on unlock. */
-	credentialId: string;
-	/** base64 salt fed to the PRF extension (stable → stable derived key). */
-	prfSalt: string;
+	/** Credential rawId, used in allowCredentials on unlock. */
+	credentialId: Bytes;
+	/** Salt fed to the PRF extension (stable → stable derived key). */
+	prfSalt: Bytes;
 	/** DEK wrapped by the PRF-derived AES-GCM key. */
-	wrappedDek: EncBlob;
+	wrappedDek: Bytes;
 }
 
 export interface PinUnlocker {
 	kind: 'pin';
 	kdf: KdfParams;
-	/** base64 Argon2id salt. */
-	salt: string;
+	/** Argon2id salt. */
+	salt: Bytes;
 	/** DEK wrapped by the PIN-derived AES-GCM key. */
-	wrappedDek: EncBlob;
+	wrappedDek: Bytes;
 	/** Consecutive failed attempts (throttling / lockout). */
 	attempts: number;
 }

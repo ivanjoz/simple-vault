@@ -18,26 +18,12 @@ export class VaultDB extends Dexie {
 
 	// `options` allows injecting an IndexedDB implementation (e.g. fake-indexeddb
 	// in tests / non-browser runtimes); in the browser Dexie uses the globals.
-	constructor(name = 'simple-vault', options?: DexieOptions) {
+	constructor(name = 'simple-vault-v2', options?: DexieOptions) {
 		super(name, options);
 		this.version(1).stores({
 			records: 'id, folderId, updated, status',
 			folders: 'id, updated, status',
 			meta: 'key'
 		});
-		// v2 is intentionally incompatible with the pre-alpha monolithic format.
-		this.version(2)
-			.stores({
-				records: 'id, folderId, updated, status',
-				folders: 'id, updated, status',
-				meta: 'key'
-			})
-			.upgrade(async (tx) => {
-				await Promise.all([
-					tx.table('records').clear(),
-					tx.table('folders').clear(),
-					tx.table('meta').clear()
-				]);
-			});
 	}
 }

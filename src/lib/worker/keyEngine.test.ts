@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test';
 
-import { aesEncrypt, base64ToBytes, importDek, utf8ToBytes } from '../crypto/index.ts';
 import { KeyEngine } from './keyEngine.ts';
 import type { KeyOp, KeyOps } from './protocol.ts';
 import type { Folder, PlainRecord } from '../vault/types.ts';
@@ -26,13 +25,8 @@ function plain(overrides: Partial<PlainRecord> = {}): PlainRecord {
 		id: 'jtfano2b',
 		folderId: '00000000',
 		updated: 42,
-		status: 'active',
-		title: 'GitHub',
-		username: 'octocat',
-		password: 'hunter2',
-		url: 'https://github.com',
-		notes: 'n',
-		history: [{ p: 'old', u: 40 }],
+		data: ['GitHub', 'octocat', 'hunter2', 'https://github.com', 'n'],
+		history: [['old', 40]],
 		historyUpdated: 42,
 		...overrides
 	};
@@ -48,87 +42,53 @@ describe('KeyEngine v2', () => {
 
 	test('encrypts positional record data and history independently', async () => {
 		const { engine } = await unlockedEngine();
-		const { stored } = await call(engine, 'encryptRecords', { records: [plain()] });
+		const stored = await call(engine, 'encryptRecords', [plain()]);
 		expect(stored[0].enc_data).toBeDefined();
 		expect(stored[0].enc_history).toBeDefined();
 
-		const { metas } = await call(engine, 'decryptMetas', { records: stored });
+		const metas = await call(engine, 'decryptMetas', stored);
 		expect(metas).toEqual([{ title: 'GitHub', username: 'octocat' }]);
-		expect((await call(engine, 'decryptSecret', { record: stored[0] })).secret).toEqual({
+		expect(await call(engine, 'decryptSecret', stored[0])).toEqual({
 			password: 'hunter2',
 			url: 'https://github.com',
 			notes: 'n'
 		});
-		expect((await call(engine, 'decryptHistory', { record: stored[0] })).history).toEqual([
-			{ p: 'old', u: 40 }
-		]);
-	});
-
-	test('opens records encrypted by the transitional JSON-array build', async () => {
-		const { engine } = await unlockedEngine();
-		const record = plain({ history: [], historyUpdated: undefined });
-		const exported = await call(engine, 'exportDek', {});
-		const dek = await importDek(base64ToBytes(exported.dek));
-		const aad = utf8ToBytes(`sv2\0record\0${record.folderId}\0${record.id}\0${record.updated}`);
-		const enc_data = await aesEncrypt(
-			dek,
-			utf8ToBytes(
-				JSON.stringify([
-					record.title,
-					record.username,
-					record.password,
-					record.url,
-					record.notes
-				])
-			),
-			aad
-		);
-
-		const stored = {
-			id: record.id,
-			folderId: record.folderId,
-			updated: record.updated,
-			status: record.status,
-			enc_data
-		};
-		expect((await call(engine, 'decryptMetas', { records: [stored] })).metas).toEqual([
-			{ title: 'GitHub', username: 'octocat' }
-		]);
+		expect(await call(engine, 'decryptHistory', stored[0])).toEqual([['old', 40]]);
 	});
 
 	test('omits empty history and returns it without decrypting a blob', async () => {
 		const { engine } = await unlockedEngine();
-		const { stored } = await call(engine, 'encryptRecords', {
-			records: [plain({ history: [], historyUpdated: undefined })]
-		});
+		const stored = await call(engine, 'encryptRecords', [
+			plain({ history: [], historyUpdated: undefined })
+		]);
 		expect(stored[0].enc_history).toBeUndefined();
-		expect((await call(engine, 'decryptHistory', { record: stored[0] })).history).toEqual([]);
+		expect(await call(engine, 'decryptHistory', stored[0])).toEqual([]);
 	});
 
 	test('binds ciphertext to folder, id and updated using AAD', async () => {
 		const { engine } = await unlockedEngine();
-		const { stored } = await call(engine, 'encryptRecords', { records: [plain()] });
+		const stored = await call(engine, 'encryptRecords', [plain()]);
 		await expect(
-			call(engine, 'decryptSecret', { record: { ...stored[0], updated: 43 } })
+			call(engine, 'decryptSecret', { ...stored[0], updated: 43 })
 		).rejects.toThrow();
 	});
 
 	test('encrypts and decrypts folder names', async () => {
 		const { engine } = await unlockedEngine();
 		const folder: Folder = { id: '00000000', name: 'Personal', updated: 42, status: 'active' };
-		const encrypted = (await call(engine, 'encryptFolders', { folders: [folder] })).folders[0];
+		const encrypted = (await call(engine, 'encryptFolders', [folder]))[0];
 		expect(encrypted.enc_name).toBeDefined();
-		expect((await call(engine, 'decryptFolders', { folders: [encrypted] })).folders[0].name).toBe(
+		expect((await call(engine, 'decryptFolders', [encrypted]))[0].name).toBe(
 			'Personal'
 		);
 	});
 
 	test('lock clears the key and further operations throw', async () => {
 		const { engine } = await unlockedEngine();
-		const { stored } = await call(engine, 'encryptRecords', { records: [plain()] });
+		const stored = await call(engine, 'encryptRecords', [plain()]);
 		await call(engine, 'lock', {});
 		expect((await call(engine, 'status', {})).unlocked).toBe(false);
-		await expect(call(engine, 'decryptSecret', { record: stored[0] })).rejects.toThrow('locked');
+		await expect(call(engine, 'decryptSecret', stored[0])).rejects.toThrow('locked');
 	});
 
 	test('fresh engines unlock with password or recovery key', async () => {
@@ -151,20 +111,18 @@ describe('KeyEngine v2', () => {
 
 	test('changeMasterPassword rotates and re-encrypts records, histories and folders', async () => {
 		const { engine, created } = await unlockedEngine();
-		const stored = (await call(engine, 'encryptRecords', { records: [plain()] })).stored;
-		const folders = (
-			await call(engine, 'encryptFolders', {
-				folders: [{ id: '00000000', name: '', updated: 42, status: 'active' }]
-			})
-		).folders;
+		const stored = await call(engine, 'encryptRecords', [plain()]);
+		const folders = await call(engine, 'encryptFolders', [
+			{ id: '00000000', name: '', updated: 42, status: 'active' }
+		]);
 		const result = await call(engine, 'changeMasterPassword', {
 			newPassword: 'newpw',
 			currentHeader: created.header,
 			stored,
 			folders
 		});
-		expect((await call(engine, 'decryptHistory', { record: result.stored[0] })).history).toHaveLength(1);
-		expect((await call(engine, 'decryptFolders', { folders: result.folders })).folders[0].name).toBe('');
+		expect(await call(engine, 'decryptHistory', result.stored[0])).toHaveLength(1);
+		expect((await call(engine, 'decryptFolders', result.folders))[0].name).toBe('');
 
 		const fresh = new KeyEngine();
 		expect(
