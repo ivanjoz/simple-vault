@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { vault } from '$lib/app/vault.svelte';
+	import type { Bytes } from '$lib/crypto';
 	import type { CardView } from '$lib/vault/types';
 	import Sidebar from './Sidebar.svelte';
 	import Card from './Card.svelte';
@@ -8,13 +9,16 @@
 	import Button from './Button.svelte';
 	import Notification from './Notification.svelte';
 	import Restore from './Restore.svelte';
+	import ManageBackups from './ManageBackups.svelte';
 
 	// undefined = closed, null = new item, CardView = editing that item.
 	let editing = $state<CardView | null | undefined>(undefined);
 
 	// Mobile-only: whether the sidebar drawer is open.
 	let sidebarOpen = $state(false);
-	let page = $state<'vault' | 'restore'>('vault');
+	let page = $state<'vault' | 'restore' | 'backups'>('vault');
+	let restoreReturnPage = $state<'vault' | 'backups'>('vault');
+	let restoreSource = $state<{ name: string; bytes: Bytes } | null>(null);
 
 	function openNew() {
 		editing = null;
@@ -29,10 +33,30 @@
 		editing = undefined;
 		vault.error = null;
 		vault.settingsOpen = false;
+		restoreSource = null;
+		restoreReturnPage = 'vault';
+		page = 'restore';
+	}
+	function openManageBackups() {
+		editing = undefined;
+		vault.error = null;
+		vault.settingsOpen = false;
+		page = 'backups';
+	}
+	function openDriveRestore(source: { name: string; bytes: Bytes }) {
+		vault.error = null;
+		restoreSource = source;
+		restoreReturnPage = 'backups';
 		page = 'restore';
 	}
 	function closeRestore() {
 		vault.error = null;
+		restoreSource = null;
+		page = restoreReturnPage;
+	}
+	function closeActivePage() {
+		vault.error = null;
+		restoreSource = null;
 		page = 'vault';
 	}
 </script>
@@ -42,7 +66,7 @@
 		open={sidebarOpen}
 		onclose={() => (sidebarOpen = false)}
 		{page}
-		onexitpage={closeRestore}
+		onexitpage={closeActivePage}
 	/>
 
 	<main class="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -62,7 +86,9 @@
 		</div>
 
 		{#if page === 'restore'}
-			<Restore onclose={closeRestore} />
+			<Restore onclose={closeRestore} source={restoreSource} />
+		{:else if page === 'backups'}
+			<ManageBackups onclose={closeActivePage} onrestore={openDriveRestore} />
 		{:else}
 		<div class="flex items-center gap-12 border-b border-border p-10">
 			<div class="relative flex-1">
@@ -112,7 +138,11 @@
 {/if}
 
 {#if vault.settingsOpen}
-	<Settings onclose={() => (vault.settingsOpen = false)} onrestore={openRestore} />
+	<Settings
+		onclose={() => (vault.settingsOpen = false)}
+		onrestore={openRestore}
+		onmanage={openManageBackups}
+	/>
 {/if}
 
 {#if vault.syncError}

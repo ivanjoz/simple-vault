@@ -4,7 +4,11 @@
 	import TextField from './TextField.svelte';
 	import PinPad from './PinPad.svelte';
 
-	let { onclose, onrestore }: { onclose: () => void; onrestore: () => void } = $props();
+	let {
+		onclose,
+		onrestore,
+		onmanage
+	}: { onclose: () => void; onrestore: () => void; onmanage: () => void } = $props();
 
 	let newPassword = $state('');
 	let confirm = $state('');
@@ -237,11 +241,15 @@
 		<section class="mt-24 border-t border-border pt-20">
 			<h3 class="text-sm font-medium">Backup</h3>
 			<p class="mt-4 text-xs text-muted">The export is encrypted; import replaces this device's vault.</p>
-			<div class="mt-12 flex gap-8">
+			<div class="mt-12 flex flex-wrap gap-8">
 				<Button variant="ghost" disabled={vault.busy} onclick={() => vault.exportVault()}>
 					{vault.busy ? 'Exporting…' : 'Export'}
 				</Button>
 				<Button variant="ghost" onclick={onrestore}>Import</Button>
+				<Button variant="ghost" disabled={vault.busy} onclick={onmanage}>
+					<span class="icon-[lucide--list] text-[16px]"></span>
+					Manage
+				</Button>
 			</div>
 		</section>
 

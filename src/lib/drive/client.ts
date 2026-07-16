@@ -1,4 +1,4 @@
-// Google Drive v3 client for the current header + per-folder layout in appDataFolder.
+// Google Drive v3 client for live vault files and encrypted backups in appDataFolder.
 
 import type { Bytes } from '$lib/crypto';
 import { DRIVE_FILE_NAMESPACE } from '$lib/vault/format';
@@ -6,13 +6,17 @@ import { DRIVE_FILE_NAMESPACE } from '$lib/vault/format';
 export const HEADER_FILE_NAME = `${DRIVE_FILE_NAMESPACE}.header.json`;
 export const FOLDER_FILE_PREFIX = `${DRIVE_FILE_NAMESPACE}.folder.`;
 export const FOLDER_FILE_SUFFIX = '.svf';
+export const BACKUP_FILE_PREFIX = `${DRIVE_FILE_NAMESPACE}.backup.`;
+export const BACKUP_FILE_SUFFIX = '.svault';
 const API = 'https://www.googleapis.com/drive/v3';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
 
 export interface DriveFile {
 	id: string;
 	name: string;
+	createdTime?: string;
 	modifiedTime?: string;
+	size?: string;
 	version?: string;
 }
 
@@ -36,6 +40,15 @@ export function folderIdFromFileName(name: string): string | null {
 	return /^[0-9a-v]{8}$/.test(id) ? id : null;
 }
 
+export function backupFileName(date = new Date(), unique = crypto.randomUUID().slice(0, 8)): string {
+	const timestamp = date.toISOString().replaceAll(':', '-').replace('.', '-');
+	return `${BACKUP_FILE_PREFIX}${timestamp}.${unique}${BACKUP_FILE_SUFFIX}`;
+}
+
+export function isBackupFileName(name: string): boolean {
+	return name.startsWith(BACKUP_FILE_PREFIX) && name.endsWith(BACKUP_FILE_SUFFIX);
+}
+
 /** List current-generation vault files. Drive `version` is only a download cache hint. */
 export async function listVaultFiles(token: string): Promise<DriveFile[]> {
 	const files: DriveFile[] = [];
@@ -56,6 +69,30 @@ export async function listVaultFiles(token: string): Promise<DriveFile[]> {
 
 export async function findHeaderFile(token: string): Promise<DriveFile | null> {
 	return (await listVaultFiles(token)).find((file) => file.name === HEADER_FILE_NAME) ?? null;
+}
+
+/** List encrypted historical backups, newest first. */
+export async function listBackupFiles(token: string): Promise<DriveFile[]> {
+	const files: DriveFile[] = [];
+	let pageToken: string | undefined;
+	do {
+		const query = encodeURIComponent(`name contains '${BACKUP_FILE_PREFIX}' and trashed=false`);
+		const fields = encodeURIComponent(
+			'nextPageToken,files(id,name,createdTime,modifiedTime,size,version)'
+		);
+		const page = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '';
+		const res = await authed(
+			token,
+			`${API}/files?spaces=appDataFolder&q=${query}&fields=${fields}&orderBy=createdTime%20desc${page}`
+		);
+		const data = (await res.json()) as { files?: DriveFile[]; nextPageToken?: string };
+		files.push(...(data.files ?? []).filter((file) => isBackupFileName(file.name)));
+		pageToken = data.nextPageToken;
+	} while (pageToken);
+	return files.sort((left, right) => {
+		const byCreated = (right.createdTime ?? '').localeCompare(left.createdTime ?? '');
+		return byCreated || right.id.localeCompare(left.id);
+	});
 }
 
 export async function downloadJson<T>(token: string, fileId: string): Promise<T> {
@@ -112,6 +149,11 @@ export function updateJsonFile(token: string, fileId: string, data: unknown): Pr
 
 export function updateBinaryFile(token: string, fileId: string, data: Bytes): Promise<void> {
 	return updateFile(token, fileId, data, 'application/cbor');
+}
+
+/** appDataFolder files cannot be trashed; deletion is permanent. */
+export async function deleteFile(token: string, fileId: string): Promise<void> {
+	await authed(token, `${API}/files/${encodeURIComponent(fileId)}`, { method: 'DELETE' });
 }
 
 async function updateFile(

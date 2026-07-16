@@ -6,10 +6,13 @@
 	import Button from './Button.svelte';
 	import TextField from './TextField.svelte';
 
-	let { onclose }: { onclose: () => void } = $props();
+	let {
+		onclose,
+		source = null
+	}: { onclose: () => void; source?: { name: string; bytes: Bytes } | null } = $props();
 
 	let fileInput = $state<HTMLInputElement | null>(null);
-	let selectedFile = $state<File | null>(null);
+	let selectedBackup = $state<{ name: string; size: number } | null>(null);
 	let backupBytes = $state<Bytes | null>(null);
 	let manifest = $state<BackupManifest | null>(null);
 	let preview = $state<BackupPreview | null>(null);
@@ -21,6 +24,20 @@
 	// records" can re-derive the backup DEK without re-prompting.
 	let verifiedSecret = $state('');
 	let verifiedMethod = $state<'password' | 'recovery'>('password');
+
+	$effect(() => {
+		if (!source) return;
+		selectedBackup = { name: source.name, size: source.bytes.byteLength };
+		backupBytes = source.bytes;
+		fileError = '';
+		resetPreview();
+		try {
+			manifest = inspectBackup(source.bytes);
+		} catch (error) {
+			manifest = null;
+			fileError = error instanceof Error ? error.message : String(error);
+		}
+	});
 
 	const activePreviewFolders = $derived(
 		preview?.folders.filter((folder) => folder.status === 'active') ?? []
@@ -37,7 +54,7 @@
 		const input = event.target as HTMLInputElement;
 		const file = input.files?.[0];
 		if (!file) return;
-		selectedFile = file;
+		selectedBackup = { name: file.name, size: file.size };
 		backupBytes = null;
 		manifest = null;
 		fileError = '';
@@ -141,7 +158,7 @@
 						<p class="mt-4 text-xs text-muted">Current Simple Vault <code>.svault</code> backups are supported.</p>
 					</div>
 					<Button variant="ghost" onclick={() => fileInput?.click()}>
-						{selectedFile ? 'Choose another file' : 'Choose file'}
+						{selectedBackup ? 'Choose another file' : 'Choose file'}
 					</Button>
 					<input
 						bind:this={fileInput}
@@ -152,12 +169,12 @@
 					/>
 				</div>
 
-				{#if selectedFile}
+				{#if selectedBackup}
 					<div class="mt-16 flex items-center gap-12 rounded-lg bg-surface-2 p-12">
 						<span class="icon-[lucide--file-lock-2] shrink-0 text-[20px] text-accent"></span>
 						<div class="min-w-0">
-							<p class="truncate text-sm font-medium">{selectedFile.name}</p>
-							<p class="text-xs text-muted">{formatSize(selectedFile.size)}</p>
+							<p class="truncate text-sm font-medium">{selectedBackup.name}</p>
+							<p class="text-xs text-muted">{formatSize(selectedBackup.size)}</p>
 						</div>
 					</div>
 				{/if}

@@ -10,7 +10,7 @@
 	}: {
 		open?: boolean;
 		onclose?: () => void;
-		page?: 'vault' | 'restore';
+		page?: 'vault' | 'restore' | 'backups';
 		onexitpage?: () => void;
 	} = $props();
 
@@ -86,14 +86,18 @@
 	</div>
 
 	<nav class="flex-1 overflow-y-auto px-8">
-		{#if page === 'restore'}
+		{#if page !== 'vault'}
 			<div class="mb-4 flex w-full items-center gap-8 rounded-lg bg-surface-2 px-12 py-8 text-sm text-text">
-				<span class="icon-[lucide--archive-restore] shrink-0 text-[16px] text-accent"></span>
-				<span class="min-w-0 flex-1 truncate">Restore</span>
+				{#if page === 'restore'}
+					<span class="icon-[lucide--archive-restore] shrink-0 text-[16px] text-accent"></span>
+				{:else}
+					<span class="icon-[lucide--list] shrink-0 text-[16px] text-accent"></span>
+				{/if}
+				<span class="min-w-0 flex-1 truncate">{page === 'restore' ? 'Restore' : 'Manage Backups'}</span>
 				<button
 					type="button"
-					aria-label="Close Restore"
-					title="Close Restore"
+					aria-label="Close {page === 'restore' ? 'Restore' : 'Manage Backups'}"
+					title="Close {page === 'restore' ? 'Restore' : 'Manage Backups'}"
 					onclick={() => {
 						onexitpage?.();
 						onclose?.();

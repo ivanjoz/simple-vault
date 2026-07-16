@@ -21,18 +21,22 @@ import { enrollWebAuthn, isPlatformAuthenticatorAvailable, unlockWebAuthn } from
 import { derivePinKey, enrollPinKey } from '$lib/unlock/pin';
 import { requestAccessToken } from '$lib/drive/auth';
 import {
+	backupFileName,
 	createBinaryFile,
 	createJsonFile,
+	deleteFile,
 	downloadBytes,
 	downloadJson,
 	findHeaderFile,
 	folderFileName,
 	folderIdFromFileName,
 	HEADER_FILE_NAME,
+	listBackupFiles,
 	listVaultFiles,
 	updateBinaryFile,
 	updateJsonFile
 } from '$lib/drive/client';
+import type { DriveFile } from '$lib/drive/client';
 import { downloadBytes as downloadBinary, downloadText } from '$lib/app/download';
 import { copyWithAutoClear } from '$lib/session/clipboard';
 import { mergeById } from '$lib/sync/delta';
@@ -62,6 +66,7 @@ interface RecoverableDriveFile {
 }
 
 const HISTORY_LIMIT = 50;
+const DRIVE_BACKUP_LIMIT = 10;
 const AUTO_SYNC_DEBOUNCE_MS = 60_000;
 // sessionStorage key holding the DEK for the tab session (opt-in), and the
 // localStorage flag for the preference (read synchronously at startup).
@@ -835,36 +840,7 @@ class VaultState {
 		this.busy = true;
 		this.error = null;
 		try {
-			const header = await this.repo.getMeta<VaultHeader>(META_HEADER);
-			if (!header) throw new Error('No local vault is available to export.');
-			await this.#ensureFolderRows();
-
-			const [storedFolders, records] = await Promise.all([
-				this.repo.allFolders(),
-				this.repo.allRecords()
-			]);
-			const folderIds = new Set(storedFolders.map((folder) => folder.id));
-			const orphan = records.find((record) => !folderIds.has(record.folderId));
-			if (orphan) throw new Error(`Cannot export record ${orphan.id}: its folder is missing.`);
-
-			const encodedFolders: Bytes[] = [];
-			let encodedRecordCount = 0;
-			for (const folder of storedFolders) {
-				const folderRecords = records.filter((record) => record.folderId === folder.id);
-				encodedRecordCount += folderRecords.length;
-				encodedFolders.push(encodeFolderFile(folder, folderRecords));
-			}
-			if (encodedRecordCount !== records.length) {
-				throw new Error('Backup validation failed: not every record was included.');
-			}
-
-			const bytes = encodeBackup(header, encodedFolders);
-			const verified = decodeBackup(bytes).folders
-				.map(decodeFolderFile)
-				.reduce((count, folder) => count + folder.records.length, 0);
-			if (verified !== records.length) {
-				throw new Error('Backup validation failed: record count changed during encoding.');
-			}
+			const bytes = await this.#buildVaultBackup();
 			downloadBinary(`simple-vault-v${BACKUP_FORMAT}-backup.svault`, bytes);
 			return true;
 		} catch (err) {
@@ -873,6 +849,73 @@ class VaultState {
 		} finally {
 			this.busy = false;
 		}
+	}
+
+	/** List the encrypted historical snapshots owned by this app in Drive. */
+	async listDriveBackups(): Promise<DriveFile[] | null> {
+		if (this.busy) return null;
+		this.busy = true;
+		this.error = null;
+		try {
+			const token = this.#driveToken ?? (await this.#connectDrive());
+			return await listBackupFiles(token);
+		} catch (err) {
+			this.error = errorMessage(err);
+			return null;
+		} finally {
+			this.busy = false;
+		}
+	}
+
+	/** Upload a validated local snapshot, then permanently prune snapshots older than the newest ten. */
+	async createDriveBackup(): Promise<boolean> {
+		if (this.busy) return false;
+		this.busy = true;
+		this.error = null;
+		let created = false;
+		try {
+			const bytes = await this.#buildVaultBackup();
+			const token = this.#driveToken ?? (await this.#connectDrive());
+			await createBinaryFile(token, backupFileName(), bytes);
+			created = true;
+			const backups = await listBackupFiles(token);
+			for (const backup of backups.slice(DRIVE_BACKUP_LIMIT)) {
+				await deleteFile(token, backup.id);
+			}
+			return true;
+		} catch (err) {
+			this.error = created
+				? `The backup was created, but old backups could not be removed: ${errorMessage(err)}`
+				: errorMessage(err);
+			return false;
+		} finally {
+			this.busy = false;
+		}
+	}
+
+	/** Download and validate a historical Drive snapshot without changing local data. */
+	async fetchDriveBackup(fileId: string): Promise<Bytes | null> {
+		if (this.busy) return null;
+		this.busy = true;
+		this.error = null;
+		try {
+			const token = this.#driveToken ?? (await this.#connectDrive());
+			const bytes = await downloadBytes(token, fileId);
+			decodeBackup(bytes);
+			return bytes;
+		} catch (err) {
+			this.error = errorMessage(err);
+			return null;
+		} finally {
+			this.busy = false;
+		}
+	}
+
+	async downloadDriveBackup(file: DriveFile): Promise<boolean> {
+		const bytes = await this.fetchDriveBackup(file.id);
+		if (!bytes) return false;
+		downloadBinary(file.name, bytes);
+		return true;
 	}
 
 	/** Validate a backup secret and return only safe, non-secret fields for review. */
@@ -1014,6 +1057,41 @@ class VaultState {
 				await createJsonFile(this.#driveToken, HEADER_FILE_NAME, header)
 			);
 		}
+	}
+
+	/** Build the one-file backup representation shared by browser and Drive exports. */
+	async #buildVaultBackup(): Promise<Bytes> {
+		const header = await this.repo.getMeta<VaultHeader>(META_HEADER);
+		if (!header) throw new Error('No local vault is available to export.');
+		await this.#ensureFolderRows();
+
+		const [storedFolders, records] = await Promise.all([
+			this.repo.allFolders(),
+			this.repo.allRecords()
+		]);
+		const folderIds = new Set(storedFolders.map((folder) => folder.id));
+		const orphan = records.find((record) => !folderIds.has(record.folderId));
+		if (orphan) throw new Error(`Cannot export record ${orphan.id}: its folder is missing.`);
+
+		const encodedFolders: Bytes[] = [];
+		let encodedRecordCount = 0;
+		for (const folder of storedFolders) {
+			const folderRecords = records.filter((record) => record.folderId === folder.id);
+			encodedRecordCount += folderRecords.length;
+			encodedFolders.push(encodeFolderFile(folder, folderRecords));
+		}
+		if (encodedRecordCount !== records.length) {
+			throw new Error('Backup validation failed: not every record was included.');
+		}
+
+		const bytes = encodeBackup(header, encodedFolders);
+		const verified = decodeBackup(bytes).folders
+			.map(decodeFolderFile)
+			.reduce((count, folder) => count + folder.records.length, 0);
+		if (verified !== records.length) {
+			throw new Error('Backup validation failed: record count changed during encoding.');
+		}
+		return bytes;
 	}
 
 	async #uploadFolder(folderId: string): Promise<void> {

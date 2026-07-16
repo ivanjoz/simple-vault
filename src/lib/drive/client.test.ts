@@ -1,13 +1,18 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 
 import {
+	backupFileName,
+	BACKUP_FILE_PREFIX,
 	createBinaryFile,
+	deleteFile,
 	downloadBytes,
 	downloadJson,
 	findHeaderFile,
 	folderFileName,
 	folderIdFromFileName,
 	HEADER_FILE_NAME,
+	isBackupFileName,
+	listBackupFiles,
 	listVaultFiles,
 	updateBinaryFile
 } from './client.ts';
@@ -76,6 +81,29 @@ describe('current Drive client', () => {
 		expect(folderIdFromFileName('other.bin')).toBeNull();
 	});
 
+	test('creates and recognizes isolated backup filenames', () => {
+		const name = backupFileName(new Date('2026-07-16T18:30:00.000Z'), '1234abcd');
+		expect(name).toBe(`${BACKUP_FILE_PREFIX}2026-07-16T18-30-00-000Z.1234abcd.svault`);
+		expect(isBackupFileName(name)).toBe(true);
+		expect(isBackupFileName(folderFileName('jtfano2b'))).toBe(false);
+	});
+
+	test('lists only valid backup files newest first', async () => {
+		const oldName = backupFileName(new Date('2026-07-15T00:00:00.000Z'), 'old00000');
+		const newName = backupFileName(new Date('2026-07-16T00:00:00.000Z'), 'new00000');
+		mock({
+			files: [
+				{ id: 'old', name: oldName, createdTime: '2026-07-15T00:00:00.000Z', size: '12' },
+				{ id: 'not-backup', name: `${BACKUP_FILE_PREFIX}partial` },
+				{ id: 'new', name: newName, createdTime: '2026-07-16T00:00:00.000Z', size: '34' }
+			]
+		});
+		const files = await listBackupFiles('tok');
+		expect(files.map((file) => file.id)).toEqual(['new', 'old']);
+		expect(captured[0].url).toContain('spaces=appDataFolder');
+		expect(captured[0].url).toContain('orderBy=createdTime%20desc');
+	});
+
 	test('downloads JSON and raw bytes', async () => {
 		mock({ format: HEADER_FORMAT });
 		expect((await downloadJson<{ format: number }>('tok', 'header')).format).toBe(HEADER_FORMAT);
@@ -101,6 +129,13 @@ describe('current Drive client', () => {
 		expect(captured[0].method).toBe('PATCH');
 		expect(captured[0].contentType).toBe('application/cbor');
 		expect(captured[0].body).toEqual(new Uint8Array([1, 2, 3]));
+	});
+
+	test('permanently deletes an app-data file', async () => {
+		mock({});
+		await deleteFile('tok', 'backup/id');
+		expect(captured[0].method).toBe('DELETE');
+		expect(captured[0].url).toEndWith('/files/backup%2Fid');
 	});
 
 	test('throws on a non-ok response', async () => {
