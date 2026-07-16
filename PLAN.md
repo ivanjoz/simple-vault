@@ -1,6 +1,6 @@
 # Simple Vault v3 plan
 
-This document describes the intentionally incompatible pre-alpha v3 Drive/blob
+This document describes the intentionally incompatible v3 Drive/blob
 generation. Drive filenames isolate it from prior layouts, while the unchanged
 v2 key header, encrypted components, and local database remain usable. There is
 no decoder or migration path for older Drive folder blobs.
@@ -17,7 +17,7 @@ no decoder or migration path for older Drive folder blobs.
   payloads.
 - Use `updated`, not `version`, for conflict comparison. `updated` is Unix time in
   whole seconds.
-- Accept breaking changes while the project is pre-alpha.
+- Accept breaking changes while the project remains in 0.x development.
 
 ## 2. Identifiers and timestamps
 
