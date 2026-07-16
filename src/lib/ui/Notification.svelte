@@ -3,6 +3,9 @@
 		title?: string;
 		message: string;
 		variant?: 'error' | 'success' | 'info';
+		actionLabel?: string;
+		actionDisabled?: boolean;
+		onaction?: () => void;
 		ondismiss?: () => void;
 	}
 
@@ -10,6 +13,9 @@
 		title,
 		message,
 		variant = 'info',
+		actionLabel,
+		actionDisabled = false,
+		onaction,
 		ondismiss
 	}: Props = $props();
 
@@ -43,6 +49,16 @@
 	<div class="min-w-0 flex-1">
 		<p class="text-sm font-semibold text-text">{title ?? style.title}</p>
 		<p class="mt-4 text-sm leading-[20px] text-muted break-words">{message}</p>
+		{#if actionLabel && onaction}
+			<button
+				type="button"
+				class="mt-12 rounded-lg bg-accent px-12 py-8 text-sm font-medium text-black transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+				disabled={actionDisabled}
+				onclick={onaction}
+			>
+				{actionLabel}
+			</button>
+		{/if}
 	</div>
 	{#if ondismiss}
 		<button

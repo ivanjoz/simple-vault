@@ -7,6 +7,7 @@ import {
 	META_DRIVE_FOLDER_VERSIONS,
 	META_DRIVE_HEADER_ID,
 	META_LAST_SYNC,
+	META_PENDING_RECORD_SYNCS,
 	VaultRepository
 } from './repository.ts';
 import type { StoredRecord } from '../vault/types.ts';
@@ -63,7 +64,11 @@ describe('VaultRepository', () => {
 	test('meta get/set round-trips', async () => {
 		const repo = freshRepo();
 		await repo.setMeta(META_LAST_SYNC, 12345);
+		await repo.setMeta(META_PENDING_RECORD_SYNCS, { a: 67890 });
 		expect(await repo.getMeta<number>(META_LAST_SYNC)).toBe(12345);
+		expect(await repo.getMeta<Record<string, number>>(META_PENDING_RECORD_SYNCS)).toEqual({
+			a: 67890
+		});
 		expect(await repo.getMeta('missing')).toBeUndefined();
 	});
 

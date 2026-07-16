@@ -57,6 +57,24 @@ describe('current KeyEngine', () => {
 		expect(await call(engine, 'decryptHistory', stored[0])).toEqual([['old', 40]]);
 	});
 
+	test('validates all encrypted record components without exposing plaintext', async () => {
+		const { engine } = await unlockedEngine();
+		const stored = await call(engine, 'encryptRecords', [plain()]);
+		expect(await call(engine, 'validateStoredRecords', stored)).toEqual({ valid: true });
+
+		const corruptData = new Uint8Array(stored[0].enc_data!);
+		corruptData[corruptData.length - 1] ^= 1;
+		await expect(
+			call(engine, 'validateStoredRecords', [{ ...stored[0], enc_data: corruptData }])
+		).rejects.toThrow();
+
+		const corruptHistory = new Uint8Array(stored[0].enc_history!);
+		corruptHistory[corruptHistory.length - 1] ^= 1;
+		await expect(
+			call(engine, 'validateStoredRecords', [{ ...stored[0], enc_history: corruptHistory }])
+		).rejects.toThrow();
+	});
+
 	test('omits empty history and returns it without decrypting a blob', async () => {
 		const { engine } = await unlockedEngine();
 		const stored = await call(engine, 'encryptRecords', [
@@ -151,5 +169,66 @@ describe('current KeyEngine', () => {
 		const restored = new KeyEngine();
 		expect((await call(restored, 'restoreDek', { dek })).ok).toBe(true);
 		expect((await call(restored, 'status', {})).unlocked).toBe(true);
+	});
+
+	test('previews another backup with a temporary key and preserves the open vault key', async () => {
+		const { engine } = await unlockedEngine();
+		const currentRecord = (await call(engine, 'encryptRecords', [plain()]))[0];
+
+		const backupEngine = new KeyEngine();
+		const backup = await call(backupEngine, 'create', {
+			masterPassword: 'backup-password',
+			kdf: FAST_KDF
+		});
+		const folder = (
+			await call(backupEngine, 'encryptFolders', [
+				{ id: '00000001', name: 'Work', updated: 50, status: 'active' }
+			])
+		)[0];
+		const records = await call(backupEngine, 'encryptRecords', [
+			plain({
+				id: '00000002',
+				folderId: folder.id,
+				updated: 51,
+				data: ['Email', 'person@example.com', 'backup-secret', '', '']
+			})
+		]);
+
+		const wrong = await call(engine, 'previewBackup', {
+			header: backup.header,
+			secret: 'wrong',
+			method: 'password',
+			folders: [{ folder, records }]
+		});
+		expect(wrong.ok).toBe(false);
+
+		const result = await call(engine, 'previewBackup', {
+			header: backup.header,
+			secret: 'backup-password',
+			method: 'password',
+			folders: [{ folder, records }]
+		});
+		expect(result).toEqual({
+			ok: true,
+			preview: {
+				folders: [
+					{
+						id: '00000001',
+						name: 'Work',
+						updated: 50,
+						status: 'active',
+						items: [
+							{
+								id: '00000002',
+								updated: 51,
+								status: 'active',
+								hasHistory: true
+							}
+						]
+					}
+				]
+			}
+		});
+		expect((await call(engine, 'decryptSecret', currentRecord)).password).toBe('hunter2');
 	});
 });

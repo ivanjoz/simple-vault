@@ -9,6 +9,8 @@ import type {
 	SecretPlain,
 	StoredRecord
 } from '$lib/vault/types';
+import type { BackupPreview } from '$lib/vault/backup';
+import type { DecodedFolderFile } from '$lib/vault/folderFile';
 
 export interface KeyOps {
 	create: {
@@ -25,12 +27,22 @@ export interface KeyOps {
 	restoreDek: { req: { dek: Bytes }; res: { ok: boolean } };
 
 	encryptRecords: { req: PlainRecord[]; res: StoredRecord[] };
+	validateStoredRecords: { req: StoredRecord[]; res: { valid: true } };
 	decryptMetas: { req: StoredRecord[]; res: MetaPlain[] };
 	decryptSecret: { req: StoredRecord; res: SecretPlain };
 	decryptHistory: { req: StoredRecord; res: HistoryItem[] };
 
 	encryptFolders: { req: Folder[]; res: Folder[] };
 	decryptFolders: { req: Folder[]; res: Folder[] };
+	previewBackup: {
+		req: {
+			header: VaultHeader;
+			secret: string;
+			method: 'password' | 'recovery';
+			folders: DecodedFolderFile[];
+		};
+		res: { ok: boolean; preview?: BackupPreview };
+	};
 
 	decryptRecoveryKey: { req: { header: VaultHeader }; res: { recoveryKey: string } };
 	changeMasterPassword: {

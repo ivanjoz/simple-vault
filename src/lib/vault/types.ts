@@ -69,4 +69,6 @@ export interface CardView {
 	updated: number;
 	title: string;
 	username: string;
+	/** A local change to this record has not completed a Google Drive sync yet. */
+	syncPending: boolean;
 }

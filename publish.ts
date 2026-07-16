@@ -1,10 +1,9 @@
-import { rm } from 'node:fs/promises';
+import { rename, rm } from 'node:fs/promises';
 
+const buildDirectory = 'build';
 const outputDirectory = 'docs';
 
-await rm(outputDirectory, { recursive: true, force: true });
-
-console.log(`Building GitHub Pages site into ${outputDirectory}/...`);
+console.log(`Building site into ${buildDirectory}/...`);
 
 const build = Bun.spawn(['bun', 'run', 'build'], {
 	stdout: 'inherit',
@@ -17,6 +16,10 @@ if (exitCode !== 0) {
 	console.error(`Build failed with exit code ${exitCode}.`);
 	process.exit(exitCode);
 }
+
+await rm(outputDirectory, { recursive: true, force: true });
+await rename(buildDirectory, outputDirectory);
+console.log(`Moved ${buildDirectory}/ to ${outputDirectory}/.`);
 
 const requiredFiles = ['index.html', '404.html', 'CNAME', '.nojekyll'];
 const missingFiles: string[] = [];

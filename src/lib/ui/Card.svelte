@@ -23,8 +23,17 @@
 	onkeydown={open}
 	class="relative flex cursor-pointer flex-col gap-6 rounded-xl border border-border bg-surface px-12 py-10 transition-colors hover:border-accent"
 >
+	{#if card.syncPending}
+		<span
+			role="status"
+			aria-label="Waiting to sync with Google Drive"
+			title="Waiting to sync with Google Drive"
+			class="icon-[lucide--cloud-upload] absolute top-10 right-10 text-[18px] text-amber-400"
+		></span>
+	{/if}
+
 	<div class="min-w-0">
-		<div class="truncate font-medium text-text">{card.title || 'Untitled'}</div>
+		<div class="truncate pr-28 font-medium text-text">{card.title || 'Untitled'}</div>
 		<div class="truncate text-sm text-muted">{card.username || '—'}</div>
 	</div>
 

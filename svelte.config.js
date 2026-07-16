@@ -11,8 +11,6 @@ const config = {
 		// Pure client-side SPA: no server, Google Drive is the only backend.
 		adapter: adapter({
 			fallback: '404.html',
-			pages: 'docs',
-			assets: 'docs',
 			precompress: false,
 			strict: false
 		})

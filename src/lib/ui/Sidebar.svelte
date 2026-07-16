@@ -2,9 +2,40 @@
 	import { vault } from '$lib/app/vault.svelte';
 	import Button from './Button.svelte';
 
-	let { open = false, onclose }: { open?: boolean; onclose?: () => void } = $props();
+	let {
+		open = false,
+		onclose,
+		page = 'vault',
+		onexitpage
+	}: {
+		open?: boolean;
+		onclose?: () => void;
+		page?: 'vault' | 'restore';
+		onexitpage?: () => void;
+	} = $props();
 
 	let newFolder = $state('');
+	let countdownNow = $state(Date.now());
+
+	const syncTimeFormatter = new Intl.DateTimeFormat(undefined, {
+		hour: '2-digit',
+		minute: '2-digit',
+		hourCycle: 'h23'
+	});
+	const nextSyncSeconds = $derived(
+		vault.nextAutoSyncAt === null
+			? null
+			: Math.max(0, Math.ceil((vault.nextAutoSyncAt - countdownNow) / 1_000))
+	);
+
+	// Restart the one-second UI clock whenever a new debounce deadline is set.
+	$effect(() => {
+		const nextAutoSyncAt = vault.nextAutoSyncAt;
+		countdownNow = Date.now();
+		if (nextAutoSyncAt === null) return;
+		const timer = setInterval(() => (countdownNow = Date.now()), 1_000);
+		return () => clearInterval(timer);
+	});
 
 	async function addFolder() {
 		const name = newFolder.trim();
@@ -15,6 +46,7 @@
 
 	function selectFolder(id: string | null) {
 		vault.selectedFolderId = id;
+		if (page !== 'vault') onexitpage?.();
 		onclose?.();
 	}
 </script>
@@ -54,6 +86,25 @@
 	</div>
 
 	<nav class="flex-1 overflow-y-auto px-8">
+		{#if page === 'restore'}
+			<div class="mb-4 flex w-full items-center gap-8 rounded-lg bg-surface-2 px-12 py-8 text-sm text-text">
+				<span class="icon-[lucide--archive-restore] shrink-0 text-[16px] text-accent"></span>
+				<span class="min-w-0 flex-1 truncate">Restore</span>
+				<button
+					type="button"
+					aria-label="Close Restore"
+					title="Close Restore"
+					onclick={() => {
+						onexitpage?.();
+						onclose?.();
+					}}
+					class="flex h-24 w-24 shrink-0 items-center justify-center rounded text-muted transition-colors hover:bg-border hover:text-text"
+				>
+					<span class="icon-[lucide--x] text-[16px]"></span>
+				</button>
+			</div>
+		{/if}
+
 		<button
 			class="mb-4 w-full rounded-lg px-12 py-8 text-left text-sm transition-colors hover:bg-surface-2 {vault.selectedFolderId ===
 			null
@@ -123,10 +174,17 @@
 				<span class="truncate">Lock</span>
 			</Button>
 		</div>
-		{#if vault.lastSync}
-			<p class="mt-8 px-4 text-xs text-muted">
-				Synced {new Date(vault.lastSync).toLocaleTimeString()}
-			</p>
+		{#if vault.lastSync || nextSyncSeconds !== null}
+			<div class="mt-8 flex items-center justify-between gap-8 px-4 text-xs text-muted">
+				{#if vault.lastSync}
+					<span>Synced {syncTimeFormatter.format(vault.lastSync)}</span>
+				{:else}
+					<span></span>
+				{/if}
+				{#if nextSyncSeconds !== null}
+					<span class="shrink-0 text-accent">Next in {nextSyncSeconds}s</span>
+				{/if}
+			</div>
 		{/if}
 	</div>
 </aside>

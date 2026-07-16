@@ -11,6 +11,8 @@ export const META_DRIVE_HEADER_ID = `driveV${DRIVE_STORAGE_VERSION}HeaderId`;
 export const META_DRIVE_FOLDER_IDS = `driveV${DRIVE_STORAGE_VERSION}FolderIds`;
 export const META_DRIVE_FOLDER_VERSIONS = `driveV${DRIVE_STORAGE_VERSION}FolderVersions`;
 export const META_LAST_SYNC = 'lastSync';
+/** Record ids with the millisecond timestamp of their latest unsynced local change. */
+export const META_PENDING_RECORD_SYNCS = 'pendingRecordSyncs';
 export const META_SETTINGS = 'settings';
 /** Device-local biometric/PIN unlocker (never synced to Drive). */
 export const META_LOCAL_UNLOCK = 'localUnlock';

@@ -45,11 +45,13 @@ export class KeyEngine {
 			case 'exportDek': return this.exportDek();
 			case 'restoreDek': return this.restoreDek(payload as KeyOps['restoreDek']['req']);
 			case 'encryptRecords': return this.encryptRecords(payload as KeyOps['encryptRecords']['req']);
+			case 'validateStoredRecords': return this.validateStoredRecords(payload as KeyOps['validateStoredRecords']['req']);
 			case 'decryptMetas': return this.decryptMetas(payload as KeyOps['decryptMetas']['req']);
 			case 'decryptSecret': return this.decryptSecret(payload as KeyOps['decryptSecret']['req']);
 			case 'decryptHistory': return this.decryptHistory(payload as KeyOps['decryptHistory']['req']);
 			case 'encryptFolders': return this.encryptFolders(payload as KeyOps['encryptFolders']['req']);
 			case 'decryptFolders': return this.decryptFolders(payload as KeyOps['decryptFolders']['req']);
+			case 'previewBackup': return this.previewBackup(payload as KeyOps['previewBackup']['req']);
 			case 'decryptRecoveryKey': return this.getRecoveryKey(payload as KeyOps['decryptRecoveryKey']['req']);
 			case 'changeMasterPassword': return this.changeMasterPassword(payload as KeyOps['changeMasterPassword']['req']);
 			case 'regenerateRecoveryKey': return this.regenerateRecoveryKey(payload as KeyOps['regenerateRecoveryKey']['req']);
@@ -156,6 +158,18 @@ export class KeyEngine {
 		return metas;
 	}
 
+	/** Authenticate all remote record components without returning their plaintext. */
+	private async validateStoredRecords(
+		records: KeyOps['validateStoredRecords']['req']
+	): Promise<KeyOps['validateStoredRecords']['res']> {
+		const dek = this.requireDek();
+		for (const record of records) {
+			if (record.status === 'active') await this.decryptRecordData(dek, record);
+			await this.decryptStoredHistory(dek, record);
+		}
+		return { valid: true };
+	}
+
 	private async decryptSecret(record: StoredRecord): Promise<KeyOps['decryptSecret']['res']> {
 		const [, , password, url, notes] = await this.decryptRecordData(this.requireDek(), record);
 		return { password, url, notes };
@@ -201,8 +215,7 @@ export class KeyEngine {
 		return folders;
 	}
 
-	private async decryptFolders(input: Folder[]): Promise<Folder[]> {
-		const dek = this.requireDek();
+	private async decryptFolders(input: Folder[], dek = this.requireDek()): Promise<Folder[]> {
 		const folders: Folder[] = [];
 		for (const folder of input) {
 			if (!folder.enc_name) throw new Error('folder name is not encrypted');
@@ -215,6 +228,39 @@ export class KeyEngine {
 			folders.push({ ...folder, name: value[0] });
 		}
 		return folders;
+	}
+
+	/** Decrypt a backup with a temporary key without disturbing the open vault key. */
+	private async previewBackup(req: KeyOps['previewBackup']['req']): Promise<KeyOps['previewBackup']['res']> {
+		let dekBytes: Bytes;
+		try {
+			dekBytes = await unlockDekBytes(req.header, req.secret, req.method);
+		} catch {
+			return { ok: false };
+		}
+
+		try {
+			const dek = await importDek(dekBytes);
+			const folders = [];
+			for (const decoded of req.folders) {
+				const [folder] = await this.decryptFolders([decoded.folder], dek);
+				folders.push({
+					id: folder.id,
+					name: folder.name,
+					updated: folder.updated,
+					status: folder.status,
+					items: decoded.records.map((record) => ({
+						id: record.id,
+						updated: record.updated,
+						status: record.status,
+						hasHistory: record.enc_history !== undefined
+					}))
+				});
+			}
+			return { ok: true, preview: { folders } };
+		} finally {
+			dekBytes.fill(0);
+		}
 	}
 
 	private async getRecoveryKey(req: KeyOps['decryptRecoveryKey']['req']): Promise<KeyOps['decryptRecoveryKey']['res']> {

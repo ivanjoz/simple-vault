@@ -4,12 +4,11 @@
 	import TextField from './TextField.svelte';
 	import PinPad from './PinPad.svelte';
 
-	let { onclose }: { onclose: () => void } = $props();
+	let { onclose, onrestore }: { onclose: () => void; onrestore: () => void } = $props();
 
 	let newPassword = $state('');
 	let confirm = $state('');
 	let passwordNote = $state('');
-	let fileInput = $state<HTMLInputElement | null>(null);
 
 	// App-lock (biometrics / PIN) enrolment state.
 	let showPinSetup = $state(false);
@@ -80,13 +79,6 @@
 		appLockNote = 'App lock disabled.';
 	}
 
-	async function importFile(e: Event) {
-		const input = e.target as HTMLInputElement;
-		const file = input.files?.[0];
-		if (!file) return;
-		await vault.importVault(new Uint8Array(await file.arrayBuffer()));
-		onclose();
-	}
 </script>
 
 <div
@@ -241,15 +233,10 @@
 			<h3 class="text-sm font-medium">Backup</h3>
 			<p class="mt-4 text-xs text-muted">The export is encrypted; import replaces this device's vault.</p>
 			<div class="mt-12 flex gap-8">
-				<Button variant="ghost" onclick={() => vault.exportVault()}>Export</Button>
-				<Button variant="ghost" onclick={() => fileInput?.click()}>Import</Button>
-				<input
-					bind:this={fileInput}
-					type="file"
-					accept="application/cbor,.svault"
-					class="hidden"
-					onchange={importFile}
-				/>
+				<Button variant="ghost" disabled={vault.busy} onclick={() => vault.exportVault()}>
+					{vault.busy ? 'Exporting…' : 'Export'}
+				</Button>
+				<Button variant="ghost" onclick={onrestore}>Import</Button>
 			</div>
 		</section>
 

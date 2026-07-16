@@ -7,12 +7,14 @@
 	import Settings from './Settings.svelte';
 	import Button from './Button.svelte';
 	import Notification from './Notification.svelte';
+	import Restore from './Restore.svelte';
 
 	// undefined = closed, null = new item, CardView = editing that item.
 	let editing = $state<CardView | null | undefined>(undefined);
 
 	// Mobile-only: whether the sidebar drawer is open.
 	let sidebarOpen = $state(false);
+	let page = $state<'vault' | 'restore'>('vault');
 
 	function openNew() {
 		editing = null;
@@ -23,10 +25,25 @@
 	function close() {
 		editing = undefined;
 	}
+	function openRestore() {
+		editing = undefined;
+		vault.error = null;
+		vault.settingsOpen = false;
+		page = 'restore';
+	}
+	function closeRestore() {
+		vault.error = null;
+		page = 'vault';
+	}
 </script>
 
 <div class="flex h-screen overflow-hidden">
-	<Sidebar open={sidebarOpen} onclose={() => (sidebarOpen = false)} />
+	<Sidebar
+		open={sidebarOpen}
+		onclose={() => (sidebarOpen = false)}
+		{page}
+		onexitpage={closeRestore}
+	/>
 
 	<main class="flex min-w-0 flex-1 flex-col overflow-hidden">
 		<!-- Static top bar, mobile only. Fixed height, contents vertically centered. -->
@@ -44,6 +61,9 @@
 			<span class="font-semibold">Vault</span>
 		</div>
 
+		{#if page === 'restore'}
+			<Restore onclose={closeRestore} />
+		{:else}
 		<div class="flex items-center gap-12 border-b border-border p-10">
 			<div class="relative flex-1">
 				<svg
@@ -83,6 +103,7 @@
 				</div>
 			{/if}
 		</div>
+		{/if}
 	</main>
 </div>
 
@@ -91,7 +112,7 @@
 {/if}
 
 {#if vault.settingsOpen}
-	<Settings onclose={() => (vault.settingsOpen = false)} />
+	<Settings onclose={() => (vault.settingsOpen = false)} onrestore={openRestore} />
 {/if}
 
 {#if vault.syncError}
@@ -99,6 +120,18 @@
 		title="Sync failed"
 		message={vault.syncError}
 		variant="error"
-		ondismiss={() => (vault.syncError = null)}
+		actionLabel={vault.recoverableDriveFile
+			? vault.syncing
+				? 'Replacing…'
+				: 'Replace Drive file with local data'
+			: undefined}
+		actionDisabled={vault.syncing}
+		onaction={vault.recoverableDriveFile
+			? () => vault.replaceDriveFileWithLocalData()
+			: undefined}
+		ondismiss={() => {
+			vault.syncError = null;
+			vault.recoverableDriveFile = null;
+		}}
 	/>
 {/if}

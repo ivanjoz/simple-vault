@@ -13,6 +13,7 @@ import {
 	META_HEADER,
 	META_LAST_SYNC,
 	META_LOCAL_UNLOCK,
+	META_PENDING_RECORD_SYNCS,
 	VaultRepository
 } from '$lib/db/repository';
 import type { LocalUnlockKind, LocalUnlocker } from '$lib/unlock/types';
@@ -41,6 +42,7 @@ import type { StoredRecord } from '$lib/vault/types';
 import { decodeFolderFile, encodeFolderFile } from '$lib/vault/folderFile';
 import { createId, ROOT_FOLDER_ID, updatedNow } from '$lib/vault/record';
 import { decodeBackup, encodeBackup } from '$lib/vault/backup';
+import type { BackupPreview } from '$lib/vault/backup';
 import { BACKUP_FORMAT } from '$lib/vault/format';
 
 export interface RecordInput {
@@ -53,7 +55,14 @@ export interface RecordInput {
 	notes: string;
 }
 
+interface RecoverableDriveFile {
+	id: string;
+	name: string;
+	folderId: string;
+}
+
 const HISTORY_LIMIT = 50;
+const AUTO_SYNC_DEBOUNCE_MS = 60_000;
 // sessionStorage key holding the DEK for the tab session (opt-in), and the
 // localStorage flag for the preference (read synchronously at startup).
 const SESSION_DEK_KEY = 'svault.session.dek';
@@ -102,7 +111,11 @@ class VaultState {
 	driveConnected = $state(false);
 	syncing = $state(false);
 	syncError = $state<string | null>(null);
+	/** Invalid remote folder file that may be explicitly replaced from the local cache. */
+	recoverableDriveFile = $state<RecoverableDriveFile | null>(null);
 	lastSync = $state<number | null>(null);
+	/** Scheduled trailing autosync time, exposed for the sidebar countdown. */
+	nextAutoSyncAt = $state<number | null>(null);
 	/** Keep the tab unlocked across reloads via sessionStorage (opt-in, default on). */
 	persistSession = $state(true);
 	/** Whether the settings panel is open. */
@@ -114,6 +127,8 @@ class VaultState {
 	/** Background auto-lock delay in ms (-1 = never). */
 	autoLockMs = $state<number>(DEFAULT_AUTOLOCK_MS);
 	#driveToken: string | null = null;
+	#pendingRecordSyncs: Record<string, number> = {};
+	#autoSyncTimer: ReturnType<typeof setTimeout> | null = null;
 	#autoLockInstalled = false;
 
 	visibleCards = $derived.by(() => {
@@ -148,6 +163,8 @@ class VaultState {
 		void this.#detectPlatformAuth();
 		try {
 			this.lastSync = (await this.repo.getMeta<number>(META_LAST_SYNC)) ?? null;
+			this.#pendingRecordSyncs =
+				(await this.repo.getMeta<Record<string, number>>(META_PENDING_RECORD_SYNCS)) ?? {};
 			await this.#loadLocalUnlockKind();
 
 			// Resume if the DEK is still available: either a SharedWorker kept it,
@@ -164,7 +181,9 @@ class VaultState {
 					this.#clearHiddenAt();
 					await this.loadCards();
 					this.status = 'unlocked';
-					void this.#trySilentConnect(); // reconnect token only — no sync on reload
+					// Reconnect without an unconditional reload sync; a persisted pending
+					// change may resume its autosync countdown once the token is restored.
+					void this.#trySilentConnect();
 					return;
 				}
 				await this.lock(); // stale key or auto-lock expired; falls through below
@@ -268,6 +287,7 @@ class VaultState {
 	}
 
 	async lock(): Promise<void> {
+		this.#cancelAutoSync();
 		await this.client.call('lock', {});
 		this.#clearSession();
 		this.#clearHiddenAt();
@@ -511,6 +531,9 @@ class VaultState {
 
 	/** Load active records' metadata (title/username) for card rendering. */
 	async loadCards(): Promise<void> {
+		// Older/incomplete local caches can contain records without their folder
+		// row. Repair that invariant before any sync or backup can omit records.
+		await this.#ensureFolderRows();
 		const records = await this.repo.activeRecords();
 		const metas = await this.client.call('decryptMetas', records);
 		this.cards = records.map((r, i) => ({
@@ -518,7 +541,8 @@ class VaultState {
 			folderId: r.folderId === ROOT_FOLDER_ID ? '' : r.folderId,
 			updated: r.updated,
 			title: metas[i].title,
-			username: metas[i].username
+			username: metas[i].username,
+			syncPending: this.#pendingRecordSyncs[r.id] !== undefined
 		}));
 		this.folders = (await this.repo.activeFolders()).filter((folder) => folder.id !== ROOT_FOLDER_ID);
 	}
@@ -591,9 +615,9 @@ class VaultState {
 			stored[0].historyUpdated = existing.historyUpdated;
 		}
 		await this.repo.putRecords(stored);
-		await this.#uploadFolder(folderId);
-		if (existing && existing.folderId !== folderId) await this.#uploadFolder(existing.folderId);
+		await this.#markRecordPending(id);
 		await this.loadCards();
+		this.#scheduleAutoSync();
 	}
 
 	/** Soft-delete a record via a tombstone (propagates on sync). */
@@ -603,8 +627,9 @@ class VaultState {
 		await this.repo.putRecords([
 			{ id: existing.id, folderId: existing.folderId, updated: updatedNow(), status: 'deleted' }
 		]);
-		await this.#uploadFolder(existing.folderId);
+		await this.#markRecordPending(id);
 		await this.loadCards();
+		this.#scheduleAutoSync();
 	}
 
 	async addFolder(name: string): Promise<string> {
@@ -618,10 +643,15 @@ class VaultState {
 
 	/** Connect Drive (if needed) and run a full two-way sync. */
 	async syncNow(): Promise<void> {
+		if (this.syncing) return;
+		this.#cancelAutoSync();
 		this.syncing = true;
 		this.syncError = null;
+		this.recoverableDriveFile = null;
 		try {
 			const token = this.#driveToken ?? (await this.#connectDrive());
+			// Changes made after this snapshot remain pending even if this sync succeeds.
+			const pendingAtStart = { ...this.#pendingRecordSyncs };
 			const header = await this.repo.getMeta<VaultHeader>(META_HEADER);
 			if (!header) return;
 			const files = await listVaultFiles(token);
@@ -646,10 +676,12 @@ class VaultState {
 					decoded = decodeFolderFile(bytes);
 					if (decoded.folder.id !== folderId) throw new Error('folder filename/content mismatch');
 					folders = await this.client.call('decryptFolders', [decoded.folder]);
+					await this.client.call('validateStoredRecords', decoded.records);
 				} catch {
+					this.recoverableDriveFile = { id: file.id, name: file.name, folderId };
 					throw new Error(
 						`Drive file “${file.name}” is not in the current Simple Vault format. ` +
-							'This pre-alpha version does not support older or malformed vault blobs.'
+							'It may be from an older version or be corrupted. If the local items are correct, replace this Drive file with the local data.'
 					);
 				}
 				const localFolder = await this.repo.getFolder(folderId);
@@ -670,12 +702,58 @@ class VaultState {
 			const now = Date.now();
 			await this.repo.setMeta(META_LAST_SYNC, now);
 			this.lastSync = now;
+			await this.#clearSyncedRecords(pendingAtStart);
 			await this.loadCards();
+			this.#scheduleAutoSync();
 		} catch (err) {
 			this.syncError = errorMessage(err);
 		} finally {
 			this.syncing = false;
 		}
+	}
+
+	/** Explicitly overwrite a malformed remote folder file with its matching local data. */
+	async replaceDriveFileWithLocalData(): Promise<void> {
+		const remote = this.recoverableDriveFile;
+		if (!remote || this.syncing) return;
+
+		this.#cancelAutoSync();
+		this.syncing = true;
+		let replaced = false;
+		try {
+			const token = this.#driveToken ?? (await this.#connectDrive());
+			let folder = await this.repo.getFolder(remote.folderId);
+			if (!folder) {
+				throw new Error(
+					`Cannot replace “${remote.name}” because this device has no local data for that folder.`
+				);
+			}
+			if (!folder.enc_name) {
+				folder = (await this.client.call('encryptFolders', [folder]))[0];
+				await this.repo.putFolders([folder]);
+			}
+
+			const bytes = encodeFolderFile(
+				folder,
+				await this.repo.recordsForFolder(remote.folderId)
+			);
+			await updateBinaryFile(token, remote.id, bytes);
+
+			// Point future local uploads at the exact file the user chose to replace.
+			const ids =
+				(await this.repo.getMeta<Record<string, string>>(META_DRIVE_FOLDER_IDS)) ?? {};
+			ids[remote.folderId] = remote.id;
+			await this.repo.setMeta(META_DRIVE_FOLDER_IDS, ids);
+			this.recoverableDriveFile = null;
+			replaced = true;
+		} catch (err) {
+			this.syncError = errorMessage(err);
+		} finally {
+			this.syncing = false;
+		}
+
+		// Re-read Drive to verify that the replacement is valid and finish the merge.
+		if (replaced) await this.syncNow();
 	}
 
 	/** Change the master password: rotate the DEK, re-encrypt everything, re-upload. */
@@ -734,23 +812,95 @@ class VaultState {
 		}
 	}
 
-	/** Download a current-format binary backup. Folder bytes are copied without Base64. */
-	async exportVault(): Promise<void> {
-		const header = await this.repo.getMeta<VaultHeader>(META_HEADER);
-		if (!header) return;
-		const folders: Bytes[] = [];
-		for (const folder of await this.repo.allFolders()) {
-			folders.push(encodeFolderFile(folder, await this.repo.recordsForFolder(folder.id)));
+	/** Download a complete current-format backup, refusing silent record loss. */
+	async exportVault(): Promise<boolean> {
+		this.busy = true;
+		this.error = null;
+		try {
+			const header = await this.repo.getMeta<VaultHeader>(META_HEADER);
+			if (!header) throw new Error('No local vault is available to export.');
+			await this.#ensureFolderRows();
+
+			const [storedFolders, records] = await Promise.all([
+				this.repo.allFolders(),
+				this.repo.allRecords()
+			]);
+			const folderIds = new Set(storedFolders.map((folder) => folder.id));
+			const orphan = records.find((record) => !folderIds.has(record.folderId));
+			if (orphan) throw new Error(`Cannot export record ${orphan.id}: its folder is missing.`);
+
+			const encodedFolders: Bytes[] = [];
+			let encodedRecordCount = 0;
+			for (const folder of storedFolders) {
+				const folderRecords = records.filter((record) => record.folderId === folder.id);
+				encodedRecordCount += folderRecords.length;
+				encodedFolders.push(encodeFolderFile(folder, folderRecords));
+			}
+			if (encodedRecordCount !== records.length) {
+				throw new Error('Backup validation failed: not every record was included.');
+			}
+
+			const bytes = encodeBackup(header, encodedFolders);
+			const verified = decodeBackup(bytes).folders
+				.map(decodeFolderFile)
+				.reduce((count, folder) => count + folder.records.length, 0);
+			if (verified !== records.length) {
+				throw new Error('Backup validation failed: record count changed during encoding.');
+			}
+			downloadBinary(`simple-vault-v${BACKUP_FORMAT}-backup.svault`, bytes);
+			return true;
+		} catch (err) {
+			this.error = errorMessage(err);
+			return false;
+		} finally {
+			this.busy = false;
 		}
-		downloadBinary(`simple-vault-v${BACKUP_FORMAT}-backup.svault`, encodeBackup(header, folders));
+	}
+
+	/** Validate a backup secret and return only safe, non-secret fields for review. */
+	async previewVaultBackup(
+		bytes: Bytes,
+		secret: string,
+		method: UnlockMethod
+	): Promise<BackupPreview | null> {
+		this.busy = true;
+		this.error = null;
+		try {
+			const bundle = decodeBackup(bytes);
+			const result = await this.client.call('previewBackup', {
+				header: bundle.header,
+				secret,
+				method,
+				folders: bundle.folders.map(decodeFolderFile)
+			});
+			if (!result.ok || !result.preview) {
+				this.error = method === 'password' ? 'Incorrect backup password.' : 'Invalid recovery key.';
+				return null;
+			}
+			return result.preview;
+		} catch (err) {
+			this.error = errorMessage(err);
+			return null;
+		} finally {
+			this.busy = false;
+		}
 	}
 
 	/** Validate and replace local data with an imported current-format backup, then re-lock. */
 	async importVault(bytes: Bytes): Promise<void> {
 		const bundle = decodeBackup(bytes);
 		const decoded = bundle.folders.map(decodeFolderFile);
+		// A restored file may belong to a different Drive vault. Drop the old
+		// connection so the next unlock cannot merge the two automatically.
+		this.disconnectDrive();
 		await this.repo.clear();
 		this.localUnlockKind = null; // the imported vault has a different DEK
+		this.#pendingRecordSyncs = {};
+		this.lastSync = null;
+		this.syncError = null;
+		this.selectedFolderId = null;
+		this.search = '';
+		this.copiedId = null;
 		await this.repo.setMeta(META_HEADER, bundle.header);
 		for (const item of decoded) {
 			await this.repo.putFolders([item.folder]);
@@ -761,6 +911,7 @@ class VaultState {
 
 	/** Forget the Drive connection for this session (keeps local data). */
 	disconnectDrive(): void {
+		this.#cancelAutoSync();
 		this.#driveToken = null;
 		this.driveConnected = false;
 		if (browser) sessionStorage.removeItem(SESSION_TOKEN_KEY);
@@ -812,6 +963,81 @@ class VaultState {
 		}
 	}
 
+	/** Persist a local record change before exposing it as pending in the UI. */
+	async #markRecordPending(id: string): Promise<void> {
+		this.#pendingRecordSyncs = { ...this.#pendingRecordSyncs, [id]: Date.now() };
+		await this.repo.setMeta(META_PENDING_RECORD_SYNCS, this.#pendingRecordSyncs);
+	}
+
+	/** Clear only changes that were present, and unchanged, when the sync began. */
+	async #clearSyncedRecords(synced: Record<string, number>): Promise<void> {
+		const remaining = { ...this.#pendingRecordSyncs };
+		for (const [id, changedAt] of Object.entries(synced)) {
+			if (remaining[id] === changedAt) delete remaining[id];
+		}
+		this.#pendingRecordSyncs = remaining;
+		if (Object.keys(remaining).length) {
+			await this.repo.setMeta(META_PENDING_RECORD_SYNCS, remaining);
+		} else {
+			await this.repo.deleteMeta(META_PENDING_RECORD_SYNCS);
+		}
+	}
+
+	/** Debounce Drive sync until 60 seconds after the most recent record change. */
+	#scheduleAutoSync(): void {
+		this.#cancelAutoSync();
+		if (!browser || this.status !== 'unlocked' || !this.#driveToken) return;
+		const changedAt = Object.values(this.#pendingRecordSyncs);
+		if (!changedAt.length) return;
+		const dueAt = Math.max(...changedAt) + AUTO_SYNC_DEBOUNCE_MS;
+		const delay = Math.max(0, dueAt - Date.now());
+		this.nextAutoSyncAt = dueAt;
+		this.#autoSyncTimer = setTimeout(() => {
+			this.#autoSyncTimer = null;
+			this.nextAutoSyncAt = null;
+			if (this.syncing) {
+				this.nextAutoSyncAt = Date.now() + 1_000;
+				this.#autoSyncTimer = setTimeout(() => {
+					this.#autoSyncTimer = null;
+					this.nextAutoSyncAt = null;
+					this.#scheduleAutoSync();
+				}, 1_000);
+				return;
+			}
+			void this.syncNow();
+		}, delay);
+	}
+
+	#cancelAutoSync(): void {
+		if (this.#autoSyncTimer !== null) clearTimeout(this.#autoSyncTimer);
+		this.#autoSyncTimer = null;
+		this.nextAutoSyncAt = null;
+	}
+
+	/** Ensure the root and every record-owning folder have an encrypted row. */
+	async #ensureFolderRows(): Promise<void> {
+		const [records, folders] = await Promise.all([
+			this.repo.allRecords(),
+			this.repo.allFolders()
+		]);
+		const requiredIds = new Set([ROOT_FOLDER_ID, ...records.map((record) => record.folderId)]);
+		const existingIds = new Set(folders.map((folder) => folder.id));
+		const missingIds = [...requiredIds].filter((id) => !existingIds.has(id));
+		if (!missingIds.length) return;
+
+		const now = updatedNow();
+		const repaired = await this.client.call(
+			'encryptFolders',
+			missingIds.map((id) => ({
+				id,
+				name: id === ROOT_FOLDER_ID ? '' : `Recovered folder (${id})`,
+				updated: now,
+				status: 'active' as const
+			}))
+		);
+		await this.repo.putFolders(repaired);
+	}
+
 	async #decryptCachedFolderNames(): Promise<void> {
 		const encrypted = (await this.repo.allFolders()).filter((folder) => folder.enc_name);
 		if (!encrypted.length) return;
@@ -829,17 +1055,20 @@ class VaultState {
 	/**
 	 * Reconnect Drive without a popup. Reuses a cached, still-valid access token
 	 * (so plain reloads make no Google call at all); only re-requests silently
-	 * when the cached token is missing or expired. No sync.
+	 * when the cached token is missing or expired. This does not force a sync,
+	 * but it resumes the debounce timer when local record changes are pending.
 	 */
 	async #trySilentConnect(): Promise<void> {
 		const cached = this.#loadCachedToken();
 		if (cached) {
 			this.#driveToken = cached;
 			this.driveConnected = true;
+			this.#scheduleAutoSync();
 			return;
 		}
 		try {
 			await this.#connectDrive('none');
+			this.#scheduleAutoSync();
 		} catch {
 			/* not previously consented / no active Google session — stay offline */
 		}
