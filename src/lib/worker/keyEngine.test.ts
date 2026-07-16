@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import { KeyEngine } from './keyEngine.ts';
 import type { KeyOp, KeyOps } from './protocol.ts';
 import type { Folder, PlainRecord } from '../vault/types.ts';
+import { HEADER_FORMAT } from '../vault/format.ts';
 
 const FAST_KDF = { algo: 'argon2id', mem: 1024, iters: 1, parallelism: 1, hashLength: 32 } as const;
 
@@ -32,10 +33,10 @@ function plain(overrides: Partial<PlainRecord> = {}): PlainRecord {
 	};
 }
 
-describe('KeyEngine v2', () => {
+describe('current KeyEngine', () => {
 	test('creates an unlocked ciphertext-free header', async () => {
 		const { engine, created } = await unlockedEngine();
-		expect(created.header.format).toBe(2);
+		expect(created.header.format).toBe(HEADER_FORMAT);
 		expect('ciphertext' in created.header).toBe(false);
 		expect((await call(engine, 'status', {})).unlocked).toBe(true);
 	});

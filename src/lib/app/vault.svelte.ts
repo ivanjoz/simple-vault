@@ -41,6 +41,7 @@ import type { StoredRecord } from '$lib/vault/types';
 import { decodeFolderFile, encodeFolderFile } from '$lib/vault/folderFile';
 import { createId, ROOT_FOLDER_ID, updatedNow } from '$lib/vault/record';
 import { decodeBackup, encodeBackup } from '$lib/vault/backup';
+import { BACKUP_FORMAT } from '$lib/vault/format';
 
 export interface RecordInput {
 	id?: string;
@@ -639,9 +640,18 @@ class VaultState {
 				if (file.version) versions[folderId] = file.version;
 				const bytes = await downloadBytes(token, file.id);
 				remoteBytes.set(folderId, bytes);
-				const decoded = decodeFolderFile(bytes);
-				if (decoded.folder.id !== folderId) throw new Error('folder filename/content mismatch');
-				const folders = await this.client.call('decryptFolders', [decoded.folder]);
+				let decoded: ReturnType<typeof decodeFolderFile>;
+				let folders: Folder[];
+				try {
+					decoded = decodeFolderFile(bytes);
+					if (decoded.folder.id !== folderId) throw new Error('folder filename/content mismatch');
+					folders = await this.client.call('decryptFolders', [decoded.folder]);
+				} catch {
+					throw new Error(
+						`Drive file “${file.name}” is not in the current Simple Vault format. ` +
+							'This pre-alpha version does not support older or malformed vault blobs.'
+					);
+				}
 				const localFolder = await this.repo.getFolder(folderId);
 				await this.repo.putFolders(mergeById(localFolder ? [localFolder] : [], folders));
 				remoteRecords = mergeStoredRecords(remoteRecords, decoded.records);
@@ -724,7 +734,7 @@ class VaultState {
 		}
 	}
 
-	/** Download a binary v2 backup. Folder bytes are copied without Base64. */
+	/** Download a current-format binary backup. Folder bytes are copied without Base64. */
 	async exportVault(): Promise<void> {
 		const header = await this.repo.getMeta<VaultHeader>(META_HEADER);
 		if (!header) return;
@@ -732,10 +742,10 @@ class VaultState {
 		for (const folder of await this.repo.allFolders()) {
 			folders.push(encodeFolderFile(folder, await this.repo.recordsForFolder(folder.id)));
 		}
-		downloadBinary('simple-vault-backup.svault', encodeBackup(header, folders));
+		downloadBinary(`simple-vault-v${BACKUP_FORMAT}-backup.svault`, encodeBackup(header, folders));
 	}
 
-	/** Validate and replace local data with an imported v2 backup, then re-lock. */
+	/** Validate and replace local data with an imported current-format backup, then re-lock. */
 	async importVault(bytes: Bytes): Promise<void> {
 		const bundle = decodeBackup(bytes);
 		const decoded = bundle.folders.map(decodeFolderFile);

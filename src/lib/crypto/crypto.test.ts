@@ -19,6 +19,7 @@ import {
 	unlockWithPassword,
 	unlockWithRecovery
 } from './envelope.ts';
+import { HEADER_FORMAT } from '$lib/vault/format';
 
 // A fast KDF profile so the suite runs quickly. Real vaults use DEFAULT_KDF.
 const FAST_KDF = { algo: 'argon2id', mem: 1024, iters: 1, parallelism: 1, hashLength: 32 } as const;
@@ -106,7 +107,7 @@ describe('dek wrap/unwrap', () => {
 describe('vault header', () => {
 	test('unlocks with the master password', async () => {
 		const { header } = await createVault('correct horse', { now: 1000, kdf: FAST_KDF });
-		expect(header.format).toBe(2);
+		expect(header.format).toBe(HEADER_FORMAT);
 		await expect(unlockWithPassword(header, 'correct horse')).resolves.toBeDefined();
 	});
 

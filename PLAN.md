@@ -1,8 +1,9 @@
-# Simple Vault v2 plan
+# Simple Vault v3 plan
 
-This document describes the intentionally incompatible pre-alpha v2 storage
-format. There is no migration path from the old single `vault.json` ciphertext.
-Old local databases and old Drive files may be discarded.
+This document describes the intentionally incompatible pre-alpha v3 Drive/blob
+generation. Drive filenames isolate it from prior layouts, while the unchanged
+v2 key header, encrypted components, and local database remain usable. There is
+no decoder or migration path for older Drive folder blobs.
 
 ## 1. Goals
 
@@ -68,7 +69,7 @@ All files live in Drive's hidden `appDataFolder`.
 
 ### 4.1 Header file
 
-File name: `simple-vault.header.json`
+File name: `simple-vault.v3.header.json`
 
 The header is small and remains JSON:
 
@@ -87,11 +88,12 @@ interface VaultHeader {
 
 The header contains no records, folders, or monolithic vault ciphertext. It changes
 only for key-management operations such as master-password change or recovery-key
-regeneration.
+regeneration. Its internal schema remains format 2 because this generation did not
+change key wrapping; the versioned filename identifies the Drive storage generation.
 
 ### 4.2 Folder files
 
-File name: `simple-vault.folder.<folderId>.svf`
+File name: `simple-vault.v3.folder.<folderId>.svf`
 
 The reserved folder ID `00000000` contains records that the UI calls “No folder”.
 Every other logical folder has exactly one Drive file. Folder names and deletion
@@ -136,7 +138,7 @@ unsigned integers, and ordinary CBOR byte strings, so every file is self-contain
 
 ```ts
 type FolderFile = [
-  format: 2,
+  format: 3,
   folderId: ByteString,          // five-byte Base32 ID
   folderUpdated: number,
   folderFlags: number,           // bit 0 = deleted
@@ -201,9 +203,9 @@ is opened or when a password change needs to append an item.
 
 ### 8.1 Discovery
 
-1. Locate and download `simple-vault.header.json`.
+1. Locate and download `simple-vault.v3.header.json`.
 2. Unlock the DEK with the master password, recovery key, or device-local unlocker.
-3. List `simple-vault.folder.*.svf` files in `appDataFolder`.
+3. List `simple-vault.v3.folder.*.svf` files in `appDataFolder`.
 4. Download changed folder files, decode them, and merge by `(id, updated)`.
 
 Drive's server-side file version may be cached only as a download optimization. It
@@ -230,10 +232,10 @@ is not part of the domain model and is never called the record version.
 
 ## 9. Backup and import
 
-The old JSON-envelope export is removed. A v2 backup is a CBOR `.svault` bundle:
+The old JSON-envelope export is removed. A v3 backup is a CBOR `.svault` bundle:
 
 ```ts
-[format: 2, header: VaultHeader, folderFiles: ByteString[]]
+[format: 3, header: VaultHeader, folderFiles: ByteString[]]
 ```
 
 Import is all-or-nothing, validates the complete bundle first, then replaces local
@@ -257,7 +259,7 @@ included in plaintext.
 3. Replace `VaultEnvelope` with the ciphertext-free `VaultHeader`.
 4. Replace the Drive client with header/folder listing and binary upload APIs.
 5. Replace monolithic hydrate/persist/sync with per-folder merge and upload.
-6. Replace JSON backup/import with the v2 binary bundle.
+6. Replace JSON backup/import with the v3 binary bundle.
 7. Update unit and end-to-end tests, then remove all v1 code.
 
 ## 12. Explicitly accepted constraints

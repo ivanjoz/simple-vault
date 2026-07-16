@@ -1,5 +1,7 @@
 // Shared crypto types.
 
+import { HEADER_FORMAT } from '$lib/vault/format';
+
 /**
  * ArrayBuffer-backed byte array. TS 7's stricter typed-array generics require an
  * explicit `ArrayBuffer` (not `SharedArrayBuffer`) backing for WebCrypto's
@@ -29,7 +31,7 @@ export interface KdfParams {
  * The small key header stored separately from folder payload files.
  */
 export interface VaultHeader {
-	format: 2;
+	format: typeof HEADER_FORMAT;
 	kdf: KdfParams;
 	/** base64 salt for the master-password KEK. */
 	saltPassword: string;

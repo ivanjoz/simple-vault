@@ -2,7 +2,13 @@ import { describe, expect, test } from 'bun:test';
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
 
 import { VaultDB } from './database.ts';
-import { META_LAST_SYNC, VaultRepository } from './repository.ts';
+import {
+	META_DRIVE_FOLDER_IDS,
+	META_DRIVE_FOLDER_VERSIONS,
+	META_DRIVE_HEADER_ID,
+	META_LAST_SYNC,
+	VaultRepository
+} from './repository.ts';
 import type { StoredRecord } from '../vault/types.ts';
 import type { Bytes } from '../crypto/types.ts';
 
@@ -20,6 +26,12 @@ function stored(id: string, updated: number, status: 'active' | 'deleted' = 'act
 }
 
 describe('VaultRepository', () => {
+	test('isolates cached Drive IDs by storage generation', () => {
+		expect(META_DRIVE_HEADER_ID).toBe('driveV3HeaderId');
+		expect(META_DRIVE_FOLDER_IDS).toBe('driveV3FolderIds');
+		expect(META_DRIVE_FOLDER_VERSIONS).toBe('driveV3FolderVersions');
+	});
+
 	test('stores and reads records', async () => {
 		const repo = freshRepo();
 		await repo.putRecords([stored('a', 1), stored('b', 2)]);

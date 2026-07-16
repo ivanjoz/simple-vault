@@ -1,8 +1,7 @@
 import type { Bytes, VaultHeader } from '$lib/crypto';
 import { decodeCbor, encodeCbor } from './cbor.ts';
 import { decodeFolderFile } from './folderFile.ts';
-
-const FORMAT = 2;
+import { BACKUP_FORMAT, HEADER_FORMAT } from './format.ts';
 
 export interface VaultBackup {
 	header: VaultHeader;
@@ -10,7 +9,7 @@ export interface VaultBackup {
 }
 
 export function encodeBackup(header: VaultHeader, folders: Bytes[]): Bytes {
-	return encodeCbor([FORMAT, header, folders]);
+	return encodeCbor([BACKUP_FORMAT, header, folders]);
 }
 
 export function decodeBackup(input: Bytes): VaultBackup {
@@ -20,11 +19,11 @@ export function decodeBackup(input: Bytes): VaultBackup {
 	} catch {
 		throw new Error('invalid CBOR vault backup');
 	}
-	if (!Array.isArray(value) || value.length !== 3 || value[0] !== FORMAT) {
+	if (!Array.isArray(value) || value.length !== 3 || value[0] !== BACKUP_FORMAT) {
 		throw new Error('unsupported vault backup format');
 	}
 	const header = value[1] as VaultHeader;
-	if (!header || typeof header !== 'object' || header.format !== FORMAT) {
+	if (!header || typeof header !== 'object' || header.format !== HEADER_FORMAT) {
 		throw new Error('invalid vault backup header');
 	}
 	if (!Array.isArray(value[2])) throw new Error('invalid vault backup folders');

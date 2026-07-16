@@ -123,9 +123,7 @@
 				<span class="truncate">Lock</span>
 			</Button>
 		</div>
-		{#if vault.syncError}
-			<p class="mt-8 px-4 text-xs text-danger">{vault.syncError}</p>
-		{:else if vault.lastSync}
+		{#if vault.lastSync}
 			<p class="mt-8 px-4 text-xs text-muted">
 				Synced {new Date(vault.lastSync).toLocaleTimeString()}
 			</p>

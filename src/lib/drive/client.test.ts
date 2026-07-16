@@ -7,9 +7,11 @@ import {
 	findHeaderFile,
 	folderFileName,
 	folderIdFromFileName,
+	HEADER_FILE_NAME,
 	listVaultFiles,
 	updateBinaryFile
 } from './client.ts';
+import { HEADER_FORMAT } from '$lib/vault/format';
 
 interface Captured {
 	url: string;
@@ -49,9 +51,10 @@ afterEach(() => {
 	globalThis.fetch = originalFetch;
 });
 
-describe('v2 drive client', () => {
+describe('current Drive client', () => {
 	test('lists header and folder files with server versions', async () => {
-		mock({ files: [{ id: 'header', name: 'simple-vault.header.json', version: '7' }] });
+		expect(HEADER_FILE_NAME).toBe('simple-vault.v3.header.json');
+		mock({ files: [{ id: 'header', name: HEADER_FILE_NAME, version: '7' }] });
 		const files = await listVaultFiles('tok');
 		expect(files[0].version).toBe('7');
 		expect(captured[0].url).toContain('spaces=appDataFolder');
@@ -59,19 +62,23 @@ describe('v2 drive client', () => {
 		expect(captured[0].auth).toBe('Bearer tok');
 	});
 
-	test('findHeaderFile returns the v2 header only', async () => {
+	test('findHeaderFile returns the current versioned header only', async () => {
 		mock({ files: [{ id: 'folder', name: folderFileName('jtfano2b') }] });
+		expect(await findHeaderFile('tok')).toBeNull();
+		mock({ files: [{ id: 'old-header', name: 'simple-vault.header.json' }] });
 		expect(await findHeaderFile('tok')).toBeNull();
 	});
 
 	test('round-trips folder filenames', () => {
+		expect(folderFileName('jtfano2b')).toBe('simple-vault.v3.folder.jtfano2b.svf');
 		expect(folderIdFromFileName(folderFileName('jtfano2b'))).toBe('jtfano2b');
+		expect(folderIdFromFileName('simple-vault.folder.jtfano2b.svf')).toBeNull();
 		expect(folderIdFromFileName('other.bin')).toBeNull();
 	});
 
 	test('downloads JSON and raw bytes', async () => {
-		mock({ format: 2 });
-		expect((await downloadJson<{ format: number }>('tok', 'header')).format).toBe(2);
+		mock({ format: HEADER_FORMAT });
+		expect((await downloadJson<{ format: number }>('tok', 'header')).format).toBe(HEADER_FORMAT);
 		mock(new Uint8Array([1, 2, 3]));
 		expect(await downloadBytes('tok', 'folder')).toEqual(new Uint8Array([1, 2, 3]));
 	});

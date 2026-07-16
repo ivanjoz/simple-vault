@@ -6,6 +6,7 @@
 	import RecordDialog from './RecordDialog.svelte';
 	import Settings from './Settings.svelte';
 	import Button from './Button.svelte';
+	import Notification from './Notification.svelte';
 
 	// undefined = closed, null = new item, CardView = editing that item.
 	let editing = $state<CardView | null | undefined>(undefined);
@@ -91,4 +92,13 @@
 
 {#if vault.settingsOpen}
 	<Settings onclose={() => (vault.settingsOpen = false)} />
+{/if}
+
+{#if vault.syncError}
+	<Notification
+		title="Sync failed"
+		message={vault.syncError}
+		variant="error"
+		ondismiss={() => (vault.syncError = null)}
+	/>
 {/if}

@@ -6,6 +6,7 @@ import type { Folder } from './types.ts';
 import type { VaultHeader } from '$lib/crypto';
 import { encodeFolderFile } from './folderFile.ts';
 import { decodeBackup, encodeBackup } from './backup.ts';
+import { HEADER_FORMAT } from './format.ts';
 
 const headerBlob = {
 	iv: bytesToBase64(new Uint8Array(12)),
@@ -14,7 +15,7 @@ const headerBlob = {
 const encryptedBytes = new Uint8Array(28) as Bytes;
 
 const header: VaultHeader = {
-	format: 2,
+	format: HEADER_FORMAT,
 	kdf: { algo: 'argon2id', mem: 1, iters: 1, parallelism: 1, hashLength: 32 },
 	saltPassword: '',
 	saltRecovery: '',
@@ -24,7 +25,7 @@ const header: VaultHeader = {
 	updated: 1
 };
 
-describe('CBOR v2 backup', () => {
+describe('current CBOR backup', () => {
 	test('round-trips a header and raw folder files', () => {
 		const folder: Folder = {
 			id: '00000000',

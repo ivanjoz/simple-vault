@@ -2,13 +2,14 @@
 // encrypted (StoredRecord) or non-sensitive (Folder, meta).
 
 import type { Folder, StoredRecord } from '$lib/vault/types';
+import { DRIVE_STORAGE_VERSION } from '$lib/vault/format';
 import { VaultDB } from './database.ts';
 
 /** Well-known keys in the `meta` table. */
 export const META_HEADER = 'header';
-export const META_DRIVE_HEADER_ID = 'driveHeaderId';
-export const META_DRIVE_FOLDER_IDS = 'driveFolderIds';
-export const META_DRIVE_FOLDER_VERSIONS = 'driveFolderVersions';
+export const META_DRIVE_HEADER_ID = `driveV${DRIVE_STORAGE_VERSION}HeaderId`;
+export const META_DRIVE_FOLDER_IDS = `driveV${DRIVE_STORAGE_VERSION}FolderIds`;
+export const META_DRIVE_FOLDER_VERSIONS = `driveV${DRIVE_STORAGE_VERSION}FolderVersions`;
 export const META_LAST_SYNC = 'lastSync';
 export const META_SETTINGS = 'settings';
 /** Device-local biometric/PIN unlocker (never synced to Drive). */

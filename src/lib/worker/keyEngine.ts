@@ -1,4 +1,4 @@
-// The key-owning v2 crypto engine. Plaintext record/history values never need to
+// The key-owning crypto engine. Plaintext record/history values never need to
 // leave this worker together: callers request metadata, secrets, or history.
 
 import {
@@ -20,6 +20,7 @@ import {
 } from '$lib/crypto';
 import type { Bytes, KdfParams, VaultHeader } from '$lib/crypto';
 import { decodeCbor, encodeCbor } from '$lib/vault/cbor';
+import { HEADER_FORMAT, VAULT_AAD_NAMESPACE } from '$lib/vault/format';
 import type {
 	Folder,
 	HistoryItem,
@@ -268,7 +269,7 @@ export class KeyEngine {
 		const kekPassword = await deriveKek(password, saltPassword, kdf);
 		const kekRecovery = await deriveKek(normalizeRecoveryKey(recoveryKey), saltRecovery, kdf);
 		const header: VaultHeader = {
-			format: 2,
+			format: HEADER_FORMAT,
 			kdf,
 			saltPassword: bytesToBase64(saltPassword),
 			saltRecovery: bytesToBase64(saltRecovery),
@@ -283,7 +284,9 @@ export class KeyEngine {
 }
 
 function aad(kind: string, folderId: string, id: string, updated: number): Bytes {
-	return new TextEncoder().encode(`sv2\0${kind}\0${folderId}\0${id}\0${updated}`) as Bytes;
+	return new TextEncoder().encode(
+		`${VAULT_AAD_NAMESPACE}\0${kind}\0${folderId}\0${id}\0${updated}`
+	) as Bytes;
 }
 
 function encryptCbor(dek: CryptoKey, value: unknown, additionalData: Bytes): Promise<Bytes> {

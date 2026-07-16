@@ -1,4 +1,4 @@
-// Application and local IndexedDB models for the v2 per-folder format.
+// Application and local IndexedDB models for the current per-folder format.
 
 import type { Bytes } from '$lib/crypto';
 

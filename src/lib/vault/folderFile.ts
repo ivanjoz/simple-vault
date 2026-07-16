@@ -1,16 +1,16 @@
 import { assertEncryptedBytes } from '$lib/crypto';
 import type { Bytes } from '$lib/crypto';
 import { decodeCbor, encodeCbor } from './cbor.ts';
+import { FOLDER_FILE_FORMAT } from './format.ts';
 import type { Folder, StoredRecord } from './types.ts';
 
-const FORMAT = 2;
 const ID_BYTES = 5;
 const DELETED = 1;
 
 type CborRecord = [id: Bytes, updated: number, flags: number, data?: Bytes];
 type CborHistory = [id: Bytes, updated: number, data: Bytes];
 type CborFolder = [
-	format: number,
+	format: typeof FOLDER_FILE_FORMAT,
 	id: Bytes,
 	updated: number,
 	flags: number,
@@ -47,7 +47,7 @@ export function encodeFolderFile(folder: Folder, records: StoredRecord[]): Bytes
 		]);
 
 	const value: CborFolder = [
-		FORMAT,
+		FOLDER_FILE_FORMAT,
 		encodeId(folder.id),
 		asU32(folder.updated),
 		folder.status === 'deleted' ? DELETED : 0,
@@ -65,7 +65,7 @@ export function decodeFolderFile(bytes: Bytes): DecodedFolderFile {
 	} catch {
 		throw new Error('invalid CBOR folder file');
 	}
-	if (!Array.isArray(value) || value.length !== 7 || value[0] !== FORMAT) {
+	if (!Array.isArray(value) || value.length !== 7 || value[0] !== FOLDER_FILE_FORMAT) {
 		throw new Error('unsupported folder file format');
 	}
 

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import type { Bytes } from '$lib/crypto';
+import { decodeCbor, encodeCbor } from './cbor.ts';
 import { decodeFolderFile, decodeId, encodeFolderFile, encodeId } from './folderFile.ts';
 import type { Folder, StoredRecord } from './types.ts';
 
@@ -8,7 +9,7 @@ function encryptedBytes(seed: number): Bytes {
 	return new Uint8Array(36).fill(seed) as Bytes;
 }
 
-describe('CBOR v2 folder file', () => {
+describe('current CBOR folder file', () => {
 	test('stores an eight-character Base32 id in five bytes', () => {
 		const encoded = encodeId('jtfano2b');
 		expect(encoded.length).toBe(5);
@@ -59,5 +60,18 @@ describe('CBOR v2 folder file', () => {
 		const trailing = new Uint8Array(encoded.length + 1);
 		trailing.set(encoded);
 		expect(() => decodeFolderFile(trailing)).toThrow('CBOR');
+	});
+
+	test('rejects a different folder-blob generation', () => {
+		const folder: Folder = {
+			id: '00000000',
+			name: '',
+			updated: 1,
+			status: 'active',
+			enc_name: encryptedBytes(1)
+		};
+		const value = decodeCbor(encodeFolderFile(folder, [])) as unknown[];
+		value[0] = 2;
+		expect(() => decodeFolderFile(encodeCbor(value))).toThrow('unsupported folder file format');
 	});
 });

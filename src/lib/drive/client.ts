@@ -1,9 +1,10 @@
-// Google Drive v3 client for the v2 header + per-folder layout in appDataFolder.
+// Google Drive v3 client for the current header + per-folder layout in appDataFolder.
 
 import type { Bytes } from '$lib/crypto';
+import { DRIVE_FILE_NAMESPACE } from '$lib/vault/format';
 
-export const HEADER_FILE_NAME = 'simple-vault.header.json';
-export const FOLDER_FILE_PREFIX = 'simple-vault.folder.';
+export const HEADER_FILE_NAME = `${DRIVE_FILE_NAMESPACE}.header.json`;
+export const FOLDER_FILE_PREFIX = `${DRIVE_FILE_NAMESPACE}.folder.`;
 export const FOLDER_FILE_SUFFIX = '.svf';
 const API = 'https://www.googleapis.com/drive/v3';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
@@ -35,7 +36,7 @@ export function folderIdFromFileName(name: string): string | null {
 	return /^[0-9a-v]{8}$/.test(id) ? id : null;
 }
 
-/** List every v2 vault file. Drive file `version` is only a download cache hint. */
+/** List current-generation vault files. Drive `version` is only a download cache hint. */
 export async function listVaultFiles(token: string): Promise<DriveFile[]> {
 	const files: DriveFile[] = [];
 	let pageToken: string | undefined;

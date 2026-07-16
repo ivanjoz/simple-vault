@@ -7,6 +7,7 @@ import { base64ToBytes, bytesToUtf8, utf8ToBytes } from './encoding.ts';
 import { DEFAULT_KDF, deriveKek } from './kdf.ts';
 import { generateRecoveryKey, normalizeRecoveryKey, randomBytes } from './random.ts';
 import { bytesToBase64 } from './encoding.ts';
+import { HEADER_FORMAT } from '$lib/vault/format';
 
 export type UnlockMethod = 'password' | 'recovery';
 
@@ -44,7 +45,7 @@ export async function createVault(
 	const dek = await importDek(dekBytes);
 
 	const header: VaultHeader = {
-		format: 2,
+		format: HEADER_FORMAT,
 		kdf,
 		saltPassword: bytesToBase64(saltPassword),
 		saltRecovery: bytesToBase64(saltRecovery),
