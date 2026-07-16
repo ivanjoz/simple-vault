@@ -17,6 +17,10 @@
 	let secret = $state('');
 	let fileError = $state('');
 	let restoring = $state(false);
+	// The verified backup key, retained after a successful preview so "Import
+	// records" can re-derive the backup DEK without re-prompting.
+	let verifiedSecret = $state('');
+	let verifiedMethod = $state<'password' | 'recovery'>('password');
 
 	const activePreviewFolders = $derived(
 		preview?.folders.filter((folder) => folder.status === 'active') ?? []
@@ -25,6 +29,7 @@
 	function resetPreview() {
 		preview = null;
 		secret = '';
+		verifiedSecret = '';
 		vault.error = null;
 	}
 
@@ -49,7 +54,11 @@
 	async function inspectContents() {
 		if (!backupBytes || !secret.trim()) return;
 		preview = await vault.previewVaultBackup(backupBytes, secret, method);
-		if (preview) secret = '';
+		if (preview) {
+			verifiedSecret = secret;
+			verifiedMethod = method;
+			secret = '';
+		}
 	}
 
 	async function restoreBackup() {
@@ -61,6 +70,20 @@
 		} catch (error) {
 			fileError = error instanceof Error ? error.message : String(error);
 			restoring = false;
+		}
+	}
+
+	async function importRecords() {
+		if (!backupBytes || !preview || restoring) return;
+		restoring = true;
+		fileError = '';
+		const ok = await vault.importBackupRecords(backupBytes, verifiedSecret, verifiedMethod);
+		restoring = false;
+		if (ok) {
+			verifiedSecret = '';
+			onclose();
+		} else {
+			fileError = vault.error ?? 'Could not import the backup records.';
 		}
 	}
 
@@ -245,10 +268,25 @@
 					</div>
 				</section>
 
+				<section class="rounded-xl border border-accent/40 bg-surface p-16 md:p-20">
+					<h3 class="text-sm font-medium">Import records into this vault</h3>
+					<p class="mt-4 text-xs text-muted">
+						Merges the backup's folders and items with what's already on this device. When an item
+						exists on both sides, the version updated most recently is kept. Your current master
+						password and recovery key stay unchanged.
+					</p>
+					<div class="mt-16 flex flex-wrap justify-end gap-8">
+						<Button disabled={restoring} onclick={importRecords}>
+							{restoring ? 'Importing…' : 'Import records'}
+						</Button>
+					</div>
+				</section>
+
 				<section class="rounded-xl border border-danger/40 bg-danger/5 p-16 md:p-20">
 					<h3 class="text-sm font-medium text-danger">Replace this device's vault?</h3>
 					<p class="mt-4 text-xs text-muted">
-						Restore replaces all local folders and items. It does not immediately overwrite the vault on Drive.
+						Restore replaces all local folders and items, and switches this device to the backup's
+						master password and recovery key. It does not immediately overwrite the vault on Drive.
 					</p>
 					<div class="mt-16 flex flex-wrap justify-end gap-8">
 						<Button variant="ghost" onclick={onclose}>Cancel</Button>
@@ -257,6 +295,10 @@
 						</Button>
 					</div>
 				</section>
+
+				{#if fileError}
+					<p class="text-sm text-danger">{fileError}</p>
+				{/if}
 			{/if}
 		</div>
 	</div>

@@ -231,4 +231,77 @@ describe('current KeyEngine', () => {
 		});
 		expect((await call(engine, 'decryptSecret', currentRecord)).password).toBe('hunter2');
 	});
+
+	test('importBackupRecords re-encrypts a backup under the open vault key', async () => {
+		const { engine } = await unlockedEngine();
+
+		const backupEngine = new KeyEngine();
+		const backup = await call(backupEngine, 'create', {
+			masterPassword: 'backup-password',
+			kdf: FAST_KDF
+		});
+		const folder = (
+			await call(backupEngine, 'encryptFolders', [
+				{ id: '00000001', name: 'Work', updated: 50, status: 'active' }
+			])
+		)[0];
+		const records = await call(backupEngine, 'encryptRecords', [
+			plain({
+				id: '00000002',
+				folderId: folder.id,
+				updated: 51,
+				data: ['Email', 'person@example.com', 'backup-secret', '', ''],
+				history: [['prev', 49]],
+				historyUpdated: 51
+			})
+		]);
+		// A tombstone in the backup must carry over as a tombstone.
+		records.push({ id: '00000003', folderId: folder.id, updated: 52, status: 'deleted' });
+
+		const wrong = await call(engine, 'importBackupRecords', {
+			header: backup.header,
+			secret: 'wrong',
+			method: 'password',
+			folders: [{ folder, records }]
+		});
+		expect(wrong.ok).toBe(false);
+
+		const result = await call(engine, 'importBackupRecords', {
+			header: backup.header,
+			secret: 'backup-password',
+			method: 'password',
+			folders: [{ folder, records }]
+		});
+		expect(result.ok).toBe(true);
+
+		// Folder name is readable under the CURRENT vault key.
+		expect((await call(engine, 'decryptFolders', result.folders!))[0].name).toBe('Work');
+
+		const active = result.records!.find((record) => record.id === '00000002')!;
+		expect(active.updated).toBe(51);
+		expect((await call(engine, 'decryptSecret', active)).password).toBe('backup-secret');
+		expect(await call(engine, 'decryptHistory', active)).toEqual([['prev', 49]]);
+
+		const tombstone = result.records!.find((record) => record.id === '00000003')!;
+		expect(tombstone.status).toBe('deleted');
+		expect(tombstone.enc_data).toBeUndefined();
+	});
+
+	test('importBackupRecords rejects when the vault is locked', async () => {
+		const { engine } = await unlockedEngine();
+		const backupEngine = new KeyEngine();
+		const backup = await call(backupEngine, 'create', {
+			masterPassword: 'backup-password',
+			kdf: FAST_KDF
+		});
+		await call(engine, 'lock', {});
+		await expect(
+			call(engine, 'importBackupRecords', {
+				header: backup.header,
+				secret: 'backup-password',
+				method: 'password',
+				folders: []
+			})
+		).rejects.toThrow('locked');
+	});
 });

@@ -43,6 +43,15 @@ export interface KeyOps {
 		};
 		res: { ok: boolean; preview?: BackupPreview };
 	};
+	importBackupRecords: {
+		req: {
+			header: VaultHeader;
+			secret: string;
+			method: 'password' | 'recovery';
+			folders: DecodedFolderFile[];
+		};
+		res: { ok: boolean; folders?: Folder[]; records?: StoredRecord[] };
+	};
 
 	decryptRecoveryKey: { req: { header: VaultHeader }; res: { recoveryKey: string } };
 	changeMasterPassword: {

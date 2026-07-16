@@ -220,9 +220,14 @@
 		<!-- Recovery key -->
 		<section class="mt-24 border-t border-border pt-20">
 			<h3 class="text-sm font-medium">Recovery key</h3>
-			<p class="mt-4 text-xs text-muted">Generate a new key; the old one stops working.</p>
-			<div class="mt-12">
-				<Button variant="ghost" onclick={() => vault.regenerateRecoveryKey()}>
+			<p class="mt-4 text-xs text-muted">
+				Download the current key, or generate a new one and invalidate the old key.
+			</p>
+			<div class="mt-12 flex flex-wrap gap-8">
+				<Button variant="ghost" disabled={vault.busy} onclick={() => vault.downloadCurrentRecoveryKey()}>
+					{vault.busy ? 'Working…' : 'Download recovery key'}
+				</Button>
+				<Button variant="ghost" disabled={vault.busy} onclick={() => vault.regenerateRecoveryKey()}>
 					Regenerate recovery key
 				</Button>
 			</div>

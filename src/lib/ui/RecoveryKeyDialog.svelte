@@ -17,7 +17,7 @@
 		<h2 class="text-lg font-semibold">Save your recovery key</h2>
 		<p class="mt-8 text-sm text-muted">
 			This is the only way to unlock your vault if you forget your master password. Store it
-			somewhere safe — it will not be shown again.
+			somewhere safe. You can download it again from Settings while the vault is unlocked.
 		</p>
 
 		<div

@@ -52,6 +52,7 @@ export class KeyEngine {
 			case 'encryptFolders': return this.encryptFolders(payload as KeyOps['encryptFolders']['req']);
 			case 'decryptFolders': return this.decryptFolders(payload as KeyOps['decryptFolders']['req']);
 			case 'previewBackup': return this.previewBackup(payload as KeyOps['previewBackup']['req']);
+			case 'importBackupRecords': return this.importBackupRecords(payload as KeyOps['importBackupRecords']['req']);
 			case 'decryptRecoveryKey': return this.getRecoveryKey(payload as KeyOps['decryptRecoveryKey']['req']);
 			case 'changeMasterPassword': return this.changeMasterPassword(payload as KeyOps['changeMasterPassword']['req']);
 			case 'regenerateRecoveryKey': return this.regenerateRecoveryKey(payload as KeyOps['regenerateRecoveryKey']['req']);
@@ -260,6 +261,59 @@ export class KeyEngine {
 			return { ok: true, preview: { folders } };
 		} finally {
 			dekBytes.fill(0);
+		}
+	}
+
+	/**
+	 * Merge a backup's contents into the open vault: decrypt each folder/record
+	 * with the backup's own key, then re-encrypt it under the *current* DEK. The
+	 * open vault must be unlocked; its keys (master password / recovery key) are
+	 * left untouched. Timestamps are preserved so the caller can last-write-wins
+	 * merge by id against the local data.
+	 */
+	private async importBackupRecords(
+		req: KeyOps['importBackupRecords']['req']
+	): Promise<KeyOps['importBackupRecords']['res']> {
+		this.requireDek(); // re-encryption targets the open vault's live key
+		let backupDekBytes: Bytes;
+		try {
+			backupDekBytes = await unlockDekBytes(req.header, req.secret, req.method);
+		} catch {
+			return { ok: false };
+		}
+		try {
+			const backupDek = await importDek(backupDekBytes);
+			const plainFolders: Folder[] = [];
+			const plains: PlainRecord[] = [];
+			const tombstones: StoredRecord[] = [];
+			for (const decoded of req.folders) {
+				const [folder] = await this.decryptFolders([decoded.folder], backupDek);
+				plainFolders.push(folder);
+				for (const record of decoded.records) {
+					if (record.status === 'deleted') {
+						tombstones.push({
+							id: record.id,
+							folderId: record.folderId,
+							updated: record.updated,
+							status: 'deleted'
+						});
+						continue;
+					}
+					plains.push({
+						id: record.id,
+						folderId: record.folderId,
+						updated: record.updated,
+						data: await this.decryptRecordData(backupDek, record),
+						history: await this.decryptStoredHistory(backupDek, record),
+						historyUpdated: record.historyUpdated
+					});
+				}
+			}
+			const records = [...(await this.encryptRecords(plains)), ...tombstones];
+			const folders = await this.encryptFolders(plainFolders);
+			return { ok: true, folders, records };
+		} finally {
+			backupDekBytes.fill(0);
 		}
 	}
 

@@ -33,7 +33,7 @@ import {
 	updateBinaryFile,
 	updateJsonFile
 } from '$lib/drive/client';
-import { downloadBytes as downloadBinary } from '$lib/app/download';
+import { downloadBytes as downloadBinary, downloadText } from '$lib/app/download';
 import { copyWithAutoClear } from '$lib/session/clipboard';
 import { mergeById } from '$lib/sync/delta';
 import { KeyClient } from '$lib/worker/keyClient';
@@ -792,6 +792,24 @@ class VaultState {
 		}
 	}
 
+	/** Decrypt and download the current recovery key without rotating it. */
+	async downloadCurrentRecoveryKey(): Promise<boolean> {
+		this.busy = true;
+		this.error = null;
+		try {
+			const header = await this.repo.getMeta<VaultHeader>(META_HEADER);
+			if (!header) return false;
+			const { recoveryKey } = await this.client.call('decryptRecoveryKey', { header });
+			downloadText('simple-vault-recovery-key.txt', recoveryKey);
+			return true;
+		} catch (err) {
+			this.error = errorMessage(err);
+			return false;
+		} finally {
+			this.busy = false;
+		}
+	}
+
 	/** Issue a fresh recovery key (old one stops working) and show it once. */
 	async regenerateRecoveryKey(): Promise<boolean> {
 		this.busy = true;
@@ -881,6 +899,62 @@ class VaultState {
 		} catch (err) {
 			this.error = errorMessage(err);
 			return null;
+		} finally {
+			this.busy = false;
+		}
+	}
+
+	/**
+	 * Merge a backup's records into the open vault, keeping this device's keys.
+	 * The backup is decrypted with its own master password / recovery key, then
+	 * re-encrypted under the current DEK. Same-id conflicts keep whichever side
+	 * was updated most recently. The header, Drive link and local unlock are all
+	 * left in place; changed records are queued for the next Drive sync.
+	 */
+	async importBackupRecords(
+		bytes: Bytes,
+		secret: string,
+		method: UnlockMethod
+	): Promise<boolean> {
+		this.busy = true;
+		this.error = null;
+		try {
+			const bundle = decodeBackup(bytes);
+			const res = await this.client.call('importBackupRecords', {
+				header: bundle.header,
+				secret,
+				method,
+				folders: bundle.folders.map(decodeFolderFile)
+			});
+			if (!res.ok || !res.folders || !res.records) {
+				this.error =
+					method === 'password' ? 'Incorrect backup password.' : 'Invalid recovery key.';
+				return false;
+			}
+			await this.repo.putFolders(mergeById(await this.repo.allFolders(), res.folders));
+			const local = await this.repo.allRecords();
+			const before = new Map(local.map((record) => [record.id, record]));
+			const merged = mergeStoredRecords(local, res.records);
+			await this.repo.putRecords(merged);
+			// Queue only records the backup actually changed for the next Drive sync.
+			for (const record of merged) {
+				const prev = before.get(record.id);
+				if (
+					!prev ||
+					prev.updated !== record.updated ||
+					prev.historyUpdated !== record.historyUpdated
+				) {
+					await this.#markRecordPending(record.id);
+				}
+			}
+			await this.#ensureFolderRows();
+			await this.#decryptCachedFolderNames();
+			await this.loadCards();
+			this.#scheduleAutoSync();
+			return true;
+		} catch (err) {
+			this.error = errorMessage(err);
+			return false;
 		} finally {
 			this.busy = false;
 		}
